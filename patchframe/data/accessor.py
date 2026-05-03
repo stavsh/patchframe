@@ -3,67 +3,52 @@ patchframe.data.accessor
 
 Tiny lazy data-access handle for patchframe.
 
-Phase 1 stores small immutable ``DataAccessor`` objects directly in dataframe
-object columns. They are intentionally minimal and primarily carry ids into
-shared descriptor / asset / view tables.
+DataAccessor stores only identity information. All materialization and
+slicing is deferred to the DataSource associated with source_desc_id.
+
+Manager resolution order for materialize() / inspect():
+  1. Explicit ``manager`` argument
+  2. ``manager_hint`` stamped on the accessor at creation time
+  3. Process-wide default SourceManager
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from patchframe.data.dimensioned_slice import DimensionedSlice
     from patchframe.data.manager import SourceManager
-    from patchframe.data.slices import SliceSpec
 
 
 @dataclass(frozen=True, slots=True)
 class DataAccessor:
-    """Tiny immutable lazy accessor.
-
-    Parameters
-    ----------
-    source_desc_id:
-        Integer id into a shared source-descriptor table.
-    item_id:
-        Logical item identifier inside the source.
-    asset_id:
-        Integer id into a shared asset dictionary.
-    view_id:
-        Integer id into a shared view/slice table.
-    manager_hint:
-        Optional process-local source manager hint. This must not be relied on
-        for correctness across serialization boundaries.
-    """
+    """Tiny immutable lazy accessor."""
 
     source_desc_id: int
     item_id: Any
     asset_id: int = 0
     view_id: int = 0
+    dimensioned_slice: "DimensionedSlice | None" = None
     manager_hint: "SourceManager | None" = None
 
-    def slice(self, spec: "SliceSpec") -> "DataAccessor":
-        """Return a new accessor with a new view.
-
-        This stub does not yet compile ``SliceSpec`` into a shared view table.
-        A later implementation should delegate that responsibility to a dataset
-        state object or a source-aware view compiler.
-        """
-        raise NotImplementedError("Slice compilation is not implemented yet.")
+    def slice(self, dim_slice: "DimensionedSlice") -> "DataAccessor":
+        """Return a new accessor with the given slice attached (lazy)."""
+        return replace(self, dimensioned_slice=dim_slice)
 
     def materialize(self, manager: "SourceManager | None" = None) -> Any:
-        """Materialize this accessor using a source manager."""
-        mgr = manager or self.manager_hint
-        if mgr is None:
-            raise RuntimeError("No SourceManager available for materialization.")
-        source = mgr.get_source_by_descriptor_id(self.source_desc_id)
-        return source.materialize(self)
+        """Materialize this accessor into an in-memory object."""
+        return self._resolve_manager(manager).get_source_by_descriptor_id(self.source_desc_id).materialize(self)
 
     def inspect(self, manager: "SourceManager | None" = None) -> dict[str, Any]:
-        """Inspect this accessor using a source manager."""
-        mgr = manager or self.manager_hint
-        if mgr is None:
-            raise RuntimeError("No SourceManager available for inspection.")
-        source = mgr.get_source_by_descriptor_id(self.source_desc_id)
-        return source.inspect(self)
+        """Return lightweight metadata about this accessor."""
+        return self._resolve_manager(manager).get_source_by_descriptor_id(self.source_desc_id).inspect(self)
+
+    def _resolve_manager(self, manager: "SourceManager | None") -> "SourceManager":
+        if manager is not None:
+            return manager
+        if self.manager_hint is not None:
+            return self.manager_hint
+        from patchframe.data.manager import get_default_manager
+        return get_default_manager()

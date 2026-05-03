@@ -2,133 +2,84 @@
 
 `patchframe` is a dataframe-first infrastructure for datasets that combine:
 
-- **tabular metadata and annotations**
-- **lazy access to multidimensional array data**
-- **typed schema**
-- **explicit dataset operations**
-- **source provenance**
+- tabular metadata and annotations
+- lazy access to multidimensional array data
+- typed schema
+- explicit dataset operations
+- source tracking
 
-The goal is to provide a clean foundation for datasets that need both:
-
-1. the expressive power of a table-oriented workflow (`pandas`)
-2. the lazy data-access behavior typically associated with ML / dataset pipelines
+The core package is intentionally small and non-geometric. It models datasets as typed **fields** transformed by **operators** and related through explicit **couplings**. Structural changes are declared through explicit **transitions**.
 
 ## Status
 
-`patchframe` is in early development.
+Early development.
 
-The initial implementation is focused on a small, general core with:
+## Core ideas
 
-- no geometry in the core package
-- explicit schema / bindings / provenance
-- lazy data access through tiny `DataAccessor` objects
-- generic dataset operations
-- pluggable runtime and storage backends
+A dataset is defined by four top-level aspects:
 
-Geometry, DAS-specific slicing, SQL-backed dataset makers, and other domain-specific functionality are intended to live in extension packages rather than in the core.
+1. **Schema** — field definitions and column types
+2. **Table** — the underlying `pandas.DataFrame`
+3. **CouplingSet** — serializable declarations of relationships between fields
+4. **Sources** — `DatasetSourceInfo` records tracking where data came from
 
----
+Sources are preserved through operations by default. N-ary operators (e.g. concat) union the source sets of their inputs. Creation operators introduce new source records. This enables workflows such as upsert-back-to-source and multi-source labeling UIs.
 
-## Design goals
+The persistence layer is built from:
 
-### Dataframe-first
-Datasets should remain easy to inspect, filter, join, concatenate, and transform using familiar dataframe-style operations.
+- **ArrayStore**
+- **MetadataStore**
+- **SourceIOAdapter**
 
-### Lazy data access
-Rows may contain lazy references to array-like data without materializing that data until needed.
+The lazy data layer is built from:
 
-### Typed schema
-A dataset has an explicit schema, with field types such as:
+- **DataAccessor** — tiny lazy object stored in table cells
+- **DataSource** — runtime object that interprets and materializes accessors
+- **SourceDescriptor** — durable reopen recipe for a source
+- **SourceManager** — process-local manager of live source handles
 
-- index fields
-- regular value fields
-- data fields
-- slice-spec fields
+## Naming model
 
-### Explicit bindings
-Relationships between fields are represented explicitly through binding specs rather than implicit coupling.
+Internally, patchframe draws on QFT-inspired terminology:
 
-### Provenance-aware
-Datasets carry information about where they came from and how they were derived.
+- **Fields** — typed schema entities
+- **Operators** — dataset transformations
+- **Couplings** — explicit relationships between fields
+- **Transitions** — structural effects declared by operators
 
-### Operator-driven design
-Operations should define their effects on dataset structure explicitly, rather than relying on ad hoc dataframe mutation.
+## Operator families
 
----
+Three operator base classes cover the full construction and transformation surface:
 
-## Core concepts
+### `DatasetOperator`
 
-### Dataset state
+Unary dataset-to-dataset transformer. Subclasses declare which aspects they modify via `transitions` (default: preserve everything) and override only the relevant `apply_*` hooks. Aspects not declared are passed through automatically with no code required.
 
-A dataset is defined by four top-level parts:
+### `CreationOperator`
 
-1. **Schema**  
-   Field definitions and column types.
+Creates a dataset from external input. Subclasses must implement `generate_source_info` and `build`. The framework injects the source info into the state returned by `build` before assembling the `Dataset`.
 
-2. **Table**  
-   The underlying `pandas.DataFrame`.
+### `CompositionOperator`
 
-3. **BindingSpecSet**  
-   Serializable declarations of relationships between fields.
+Combines multiple datasets into one. All three structural hooks (`apply_schema`, `apply_table`, `apply_couplings`) are required — there is no sensible default for N-ary composition. Sources are unioned by default.
 
-4. **Provenance**  
-   Source information and lineage metadata.
+All three families support a full escape hatch by overriding `__call__` directly.
 
-### DataAccessor
+## First concrete operator
 
-A `DataAccessor` is a tiny lazy object stored in a data column.
+- `make_from_dataframe` — turns an existing dataframe and explicit schema into a dataset
 
-It identifies:
+## Planned first sources
 
-- which source a row refers to
-- which logical item inside that source is being accessed
-- which asset is being referenced
-- which lazy view / slice should be applied
+- `MemorySource`
+- `DataFrameSource`
+- `MockSource`
 
-### DataSource
+## Development setup
 
-A `DataSource` is the runtime object that knows how to interpret and materialize `DataAccessor`s.
-
-### SourceDescriptor
-
-A `SourceDescriptor` is the durable, serializable identity + reopen recipe for a source.
-
-### SourceManager
-
-A `SourceManager` is a process-local runtime manager for live `DataSource` handles.
-
-### ArrayStore / MetadataStore / SourceIOAdapter
-
-Persistence is decomposed into:
-
-- **ArrayStore**: storage of lazy array assets
-- **MetadataStore**: storage of non-lazy metadata
-- **SourceIOAdapter**: dataset-level save/load/append integration
-
----
-
-## Planned source types
-
-The first source types planned for the core package are:
-
-- **MemorySource**  
-  In-memory numpy-backed source for development and testing.
-
-- **DataFrameSource**  
-  Persistence-oriented source using dataframe-friendly serialization (pickle / Arrow).
-
-- **MockSource**  
-  Deterministic synthetic source for testing slicing and data access behavior.
-
----
-
-## Planned package layout
-
-```text
-patchframe/
-  dataset/
-  data/
-  storage/
-  ops/
-  io/
-  sources/
+```bash
+pip install -e ".[dev]"
+pytest
+ruff check .
+ruff format .
+```

@@ -5,21 +5,14 @@ build-backend = "hatchling.build"
 [project]
 name = "patchframe"
 version = "0.1.0"
-description = "A dataframe-first infrastructure for lazy multidimensional datasets with typed schema, bindings, and provenance."
+description = "A dataframe-first infrastructure for lazy multidimensional datasets with typed schema, couplings, and provenance."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Proprietary" }
 authors = [
   { name = "Your Name" }
 ]
-keywords = [
-  "datasets",
-  "dataframe",
-  "lazy-loading",
-  "machine-learning",
-  "numpy",
-  "pandas",
-]
+keywords = ["datasets", "dataframe", "lazy-loading", "pandas", "numpy"]
 classifiers = [
   "Development Status :: 2 - Pre-Alpha",
   "Intended Audience :: Developers",
@@ -48,9 +41,7 @@ dev = [
   "build>=1.2.0",
   "twine>=5.0.0",
 ]
-arrow = [
-  "pyarrow>=14.0",
-]
+arrow = ["pyarrow>=14.0"]
 
 [project.urls]
 Homepage = "https://github.com/YOUR_ORG/patchframe"
@@ -69,13 +60,7 @@ line-length = 100
 target-version = "py310"
 
 [tool.ruff.lint]
-select = [
-  "E",
-  "F",
-  "I",
-  "UP",
-  "B",
-]
+select = ["E", "F", "I", "UP", "B"]
 
 [tool.ruff.format]
 quote-style = "double"
@@ -88,6 +73,4 @@ warn_redundant_casts = true
 warn_unused_ignores = true
 strict_optional = true
 check_untyped_defs = true
-disallow_incomplete_defs = false
-disallow_untyped_defs = false
 no_implicit_optional = true

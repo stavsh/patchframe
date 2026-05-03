@@ -1,0 +1,38 @@
+"""patchframe.ops.builtin.bind_slice"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from patchframe.dataset.couplings import BindSlice, CouplingSet, FieldRef
+from patchframe.dataset.state import DatasetState
+from patchframe.ops.base import DatasetOperator
+from patchframe.ops.transitions import AspectTransition, TransitionPlan
+
+
+class bind_slice(DatasetOperator):
+    """Add a BindSlice coupling between a DimensionedSliceField and a DataField.
+
+    Per-row access (``ds[item_id]``) returns a sliced ``DataAccessor`` for the
+    data column. Bulk materialization runs through ``consume(ds, data_field)``.
+
+    Parameters
+    ----------
+    slice_field:
+        Name of the existing DimensionedSliceField (input).
+    data_field:
+        Name of the existing DataField (input + output, sliced in place).
+    """
+
+    transitions = TransitionPlan(couplings=AspectTransition("derive"))
+
+    def apply_couplings(
+        self,
+        state: DatasetState,
+        slice_field: str,
+        data_field: str,
+        **_: Any,
+    ) -> CouplingSet:
+        return state.couplings.add(
+            BindSlice(slice_field=FieldRef(slice_field), data_field=FieldRef(data_field))
+        )

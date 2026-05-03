@@ -3,27 +3,27 @@ patchframe.dataset.state
 
 Primary dataset state container for patchframe.
 
-``DatasetState`` groups the four top-level pieces of dataset state:
+DatasetState groups the core dataset aspects:
 
 - schema
 - table
-- binding specs
-- provenance
+- couplings
+- sources
 
-It may also carry shared side tables used by tiny ``DataAccessor`` objects,
-such as source descriptors, asset dictionaries, and compiled view tables.
+It also carries shared side tables used by DataAccessor objects.
 """
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 import pandas as pd
 
 from patchframe.data.descriptor import SourceDescriptor
-from patchframe.dataset.bindings import BindingSpecSet
-from patchframe.dataset.provenance import DatasetProvenance
+from patchframe.dataset.couplings import CouplingSet
+from patchframe.dataset.provenance import DatasetSourceInfo
 from patchframe.dataset.schema import Schema
 
 
@@ -33,8 +33,12 @@ class DatasetState:
 
     schema: Schema
     table: pd.DataFrame
-    bindings: BindingSpecSet = field(default_factory=BindingSpecSet)
-    provenance: DatasetProvenance = field(default_factory=DatasetProvenance)
+    couplings: CouplingSet = field(default_factory=CouplingSet)
+    sources: tuple[DatasetSourceInfo, ...] = field(default_factory=tuple)
     source_descriptors: Mapping[int, SourceDescriptor] = field(default_factory=dict)
     assets: Mapping[int, str] = field(default_factory=dict)
     views: Mapping[int, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "schema", deepcopy(self.schema))
+        object.__setattr__(self, "couplings", deepcopy(self.couplings))
