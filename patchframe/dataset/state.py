@@ -15,9 +15,10 @@ It also carries shared side tables used by DataAccessor objects.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field
-from typing import Any, Mapping
+from typing import Any
 
 import pandas as pd
 
@@ -40,5 +41,7 @@ class DatasetState:
     views: Mapping[int, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        if not self.table.index.is_unique:
+            raise ValueError("Dataset table index must be unique.")
         object.__setattr__(self, "schema", deepcopy(self.schema))
         object.__setattr__(self, "couplings", deepcopy(self.couplings))

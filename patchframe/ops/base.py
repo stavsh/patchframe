@@ -30,7 +30,6 @@ from patchframe.dataset.schema import Schema
 from patchframe.dataset.state import DatasetState
 from patchframe.ops.transitions import AspectTransition, TransitionPlan
 
-
 MISSING = object()
 
 
@@ -121,14 +120,18 @@ class Operator(metaclass=OperatorMeta):
         unknown = set(params) - set(self.__parameters__)
         if unknown:
             unknown_names = ", ".join(sorted(unknown))
-            raise TypeError(f"Unknown operator parameters for {type(self).__name__}: {unknown_names}")
+            raise TypeError(
+                f"Unknown operator parameters for {type(self).__name__}: {unknown_names}"
+            )
 
         normalized: dict[str, Any] = {}
         for name, spec in self.__parameters__.items():
             if name in params:
                 normalized[name] = params[name]
             elif spec.required and spec.default is MISSING:
-                raise ValueError(f"Missing required operator parameter '{name}' for {type(self).__name__}")
+                raise ValueError(
+                    f"Missing required operator parameter '{name}' for {type(self).__name__}"
+                )
             elif spec.default is not MISSING:
                 normalized[name] = spec.default
         return normalized
@@ -151,10 +154,26 @@ class DatasetOperator(Operator):
     def _apply(self, dataset: Dataset, *args: Any, **kwargs: Any) -> Dataset:
         t, s = self.transitions, dataset.state
         result = dataset.replace_state(
-            schema    = self.apply_schema(s, *args, **kwargs)    if t.schema.mode    != "preserve" else s.schema,
-            table     = self.apply_table(s, *args, **kwargs)     if t.table.mode     != "preserve" else s.table,
-            couplings = self.apply_couplings(s, *args, **kwargs) if t.couplings.mode != "preserve" else s.couplings,
-            sources   = self.apply_sources(s, *args, **kwargs)   if t.sources.mode   != "inherit"  else s.sources,
+            schema=(
+                self.apply_schema(s, *args, **kwargs)
+                if t.schema.mode != "preserve"
+                else s.schema
+            ),
+            table=(
+                self.apply_table(s, *args, **kwargs)
+                if t.table.mode != "preserve"
+                else s.table
+            ),
+            couplings=(
+                self.apply_couplings(s, *args, **kwargs)
+                if t.couplings.mode != "preserve"
+                else s.couplings
+            ),
+            sources=(
+                self.apply_sources(s, *args, **kwargs)
+                if t.sources.mode != "inherit"
+                else s.sources
+            ),
         )
         self._validate_output(result)
         return result
@@ -172,7 +191,12 @@ class DatasetOperator(Operator):
     def apply_couplings(self, state: DatasetState, *args: Any, **kwargs: Any) -> CouplingSet:
         raise NotImplementedError
 
-    def apply_sources(self, state: DatasetState, *args: Any, **kwargs: Any) -> tuple[DatasetSourceInfo, ...]:
+    def apply_sources(
+        self,
+        state: DatasetState,
+        *args: Any,
+        **kwargs: Any,
+    ) -> tuple[DatasetSourceInfo, ...]:
         raise NotImplementedError
 
 
@@ -206,7 +230,14 @@ class CreationOperator(Operator):
         source_desc_id = mgr.register_source(source) if source is not None else None
 
         source_info = self.generate_source_info(*args, **kwargs)
-        state = self.build(*args, **{**kwargs, "source_desc_id": source_desc_id, "source_manager": mgr})
+        state = self.build(
+            *args,
+            **{
+                **kwargs,
+                "source_desc_id": source_desc_id,
+                "source_manager": mgr,
+            },
+        )
         state = replace(state, sources=(source_info,))
         return Dataset(state=state, source_manager=mgr)
 
@@ -243,16 +274,16 @@ class CompositionOperator(Operator):
         sources   = AspectTransition("union"),
     )
 
-    def __call__(self, *datasets: Dataset) -> Dataset:
-        return self._compose(*datasets)
+    def __call__(self, *datasets: Dataset, **kwargs: Any) -> Dataset:
+        return self._compose(*datasets, **kwargs)
 
-    def _compose(self, *datasets: Dataset) -> Dataset:
+    def _compose(self, *datasets: Dataset, **kwargs: Any) -> Dataset:
         states = tuple(d.state for d in datasets)
         return Dataset(
             state=DatasetState(
-                schema    = self.apply_schema(*states),
-                table     = self.apply_table(*states),
-                couplings = self.apply_couplings(*states),
+                schema    = self.apply_schema(*states, **kwargs),
+                table     = self.apply_table(*states, **kwargs),
+                couplings = self.apply_couplings(*states, **kwargs),
                 sources   = self.combine_sources(*states),
             ),
             source_manager=self.combine_source_managers(*datasets),
@@ -269,10 +300,10 @@ class CompositionOperator(Operator):
         return None
 
     @abstractmethod
-    def apply_schema(self, *states: DatasetState) -> Schema: ...
+    def apply_schema(self, *states: DatasetState, **kwargs: Any) -> Schema: ...
 
     @abstractmethod
-    def apply_table(self, *states: DatasetState) -> pd.DataFrame: ...
+    def apply_table(self, *states: DatasetState, **kwargs: Any) -> pd.DataFrame: ...
 
     @abstractmethod
-    def apply_couplings(self, *states: DatasetState) -> CouplingSet: ...
+    def apply_couplings(self, *states: DatasetState, **kwargs: Any) -> CouplingSet: ...

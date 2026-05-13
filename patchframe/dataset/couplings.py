@@ -73,9 +73,7 @@ class Coupling:
         """Bulk materialization. Returns the new column as a Series indexed by table.index."""
         raise NotImplementedError
 
-    def apply_row(
-        self, row: dict[str, Any], state: DatasetState
-    ) -> dict[str, Any]:
+    def apply_row(self, row: dict[str, Any], state: DatasetState) -> dict[str, Any]:
         """Per-row dispatch. Default: return row unchanged."""
         return row
 
@@ -110,9 +108,7 @@ def _coerce_field_ref_tuple(value: Any) -> tuple[FieldRef, ...]:
         return (FieldRef(value),)
     refs = tuple(FieldRef(v) if isinstance(v, str) else v for v in value)
     if not all(isinstance(ref, FieldRef) for ref in refs):
-        raise TypeError(
-            "Coupling field bindings must contain field names or FieldRef values."
-        )
+        raise TypeError("Coupling field bindings must contain field names or FieldRef values.")
     return refs
 
 
@@ -128,14 +124,22 @@ class CouplingSet:
 
     def rewrite_field_names(self, mapping: dict[str, str]) -> CouplingSet:
         """Return a new coupling set with all FieldRef attributes renamed."""
-        return CouplingSet(
-            couplings=tuple(rename_field_refs(c, mapping) for c in self.couplings)
+        return CouplingSet(couplings=tuple(rename_field_refs(c, mapping) for c in self.couplings))
+
+    def retain(self, field_names: set[str]) -> CouplingSet:
+        """Return a new coupling set keeping only couplings whose fields are all in field_names."""
+        valid = tuple(
+            c
+            for c in self.couplings
+            if field_names.issuperset({c.output_field(), *c.input_fields()})
         )
+        return CouplingSet(couplings=valid)
 
 
 # ---------------------------------------------------------------------------
 # Concrete couplings
 # ---------------------------------------------------------------------------
+
 
 @dataclass(frozen=True, slots=True)
 class BindSlice(Coupling):
@@ -167,17 +171,13 @@ class BindSlice(Coupling):
         accs = state.table[self.data_field.name]
         return pd.Series(
             [
-                a.slice(s)
-                if isinstance(a, DataAccessor) and isinstance(s, DimensionedSlice)
-                else a
+                a.slice(s) if isinstance(a, DataAccessor) and isinstance(s, DimensionedSlice) else a
                 for a, s in zip(accs, slices, strict=True)
             ],
             index=state.table.index,
         )
 
-    def apply_row(
-        self, row: dict[str, Any], state: DatasetState
-    ) -> dict[str, Any]:
+    def apply_row(self, row: dict[str, Any], state: DatasetState) -> dict[str, Any]:
         from patchframe.data.accessor import DataAccessor
         from patchframe.data.dimensioned_slice import DimensionedSlice
 
@@ -261,9 +261,7 @@ class BindDimensions(Coupling):
             for ref in binding:
                 field_def = state.schema.get(ref.name)
                 if not isinstance(field_def, DimensionField):
-                    raise TypeError(
-                        f"BindDimensions field {ref.name!r} is not a DimensionField."
-                    )
+                    raise TypeError(f"BindDimensions field {ref.name!r} is not a DimensionField.")
                 field_defs.append(field_def)
 
             dimension = field_defs[0].dimension
@@ -314,14 +312,9 @@ class BindDimensions(Coupling):
         )
         return pd.Series(array, index=state.table.index)
 
-    def apply_row(
-        self, row: dict[str, Any], state: DatasetState
-    ) -> dict[str, Any]:
+    def apply_row(self, row: dict[str, Any], state: DatasetState) -> dict[str, Any]:
         dimensions = self._dimensions(state)
-        values = tuple(
-            tuple(row[ref.name] for ref in binding)
-            for binding in self.bindings
-        )
+        values = tuple(tuple(row[ref.name] for ref in binding) for binding in self.bindings)
         row = dict(row)
         row[self.slice_field.name] = self._build_slice(
             row.get(self.slice_field.name),
@@ -360,9 +353,7 @@ class Materialize(Coupling):
             index=state.table.index,
         )
 
-    def apply_row(
-        self, row: dict[str, Any], state: DatasetState
-    ) -> dict[str, Any]:
+    def apply_row(self, row: dict[str, Any], state: DatasetState) -> dict[str, Any]:
         from patchframe.data.accessor import DataAccessor
 
         v = row.get(self.field.name)

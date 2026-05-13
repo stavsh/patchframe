@@ -1,0 +1,190 @@
+"""Tests for join-plan construction."""
+
+from __future__ import annotations
+
+import pandas as pd
+import pytest
+
+from patchframe.dataset.fields import IndexField, ValueField
+from patchframe.dataset.schema import Schema
+from patchframe.ops.builtin.join import DimensionJoin, FieldEqualityJoin, join
+from patchframe.ops.builtin.make_from_dataframe import make_from_dataframe
+
+
+def _dataset(table: pd.DataFrame, *fields):
+    return make_from_dataframe(table, Schema(fields=(IndexField(name="item_id"), *fields)))
+
+
+class TestIndexJoin:
+    def test_inner_join_by_index_labels(self):
+        left = _dataset(
+            pd.DataFrame({"score": [1, 2, 3]}, index=["a", "b", "c"]),
+            ValueField(name="score", dtype=int),
+        )
+        right = _dataset(
+            pd.DataFrame({"label": [10, 20, 30]}, index=["b", "c", "d"]),
+            ValueField(name="label", dtype=int),
+        )
+
+        result = join(left, right)
+
+        assert result.schema.names() == ("join_id", "left_index", "right_index")
+        assert isinstance(result.schema.get("join_id"), IndexField)
+        assert result.table.index.name == "join_id"
+        assert result.table.index.is_unique
+        assert result.table.to_dict("list") == {
+            "left_index": ["b", "c"],
+            "right_index": ["b", "c"],
+        }
+
+    def test_left_join_by_index_labels(self):
+        left = _dataset(
+            pd.DataFrame({"score": [1, 2, 3]}, index=["a", "b", "c"]),
+            ValueField(name="score", dtype=int),
+        )
+        right = _dataset(
+            pd.DataFrame({"label": [10, 20]}, index=["b", "c"]),
+            ValueField(name="label", dtype=int),
+        )
+
+        result = join(left, right, how="left")
+
+        assert result.table["left_index"].tolist() == ["a", "b", "c"]
+        assert result.table["right_index"].isna().tolist() == [True, False, False]
+        assert result.table["right_index"].iloc[1:].tolist() == ["b", "c"]
+
+    def test_right_join_by_index_labels(self):
+        left = _dataset(
+            pd.DataFrame({"score": [1]}, index=["a"]),
+            ValueField(name="score", dtype=int),
+        )
+        right = _dataset(
+            pd.DataFrame({"label": [10, 20]}, index=["a", "b"]),
+            ValueField(name="label", dtype=int),
+        )
+
+        result = join(left, right, how="right")
+
+        assert result.table["left_index"].isna().tolist() == [False, True]
+        assert result.table["left_index"].iloc[0] == "a"
+        assert result.table["right_index"].tolist() == ["a", "b"]
+
+    def test_outer_join_by_index_labels(self):
+        left = _dataset(
+            pd.DataFrame({"score": [1, 2]}, index=["a", "b"]),
+            ValueField(name="score", dtype=int),
+        )
+        right = _dataset(
+            pd.DataFrame({"label": [10, 20]}, index=["b", "c"]),
+            ValueField(name="label", dtype=int),
+        )
+
+        result = join(left, right, how="outer")
+
+        assert result.table["left_index"].isna().tolist() == [False, False, True]
+        assert result.table["right_index"].isna().tolist() == [True, False, False]
+        assert result.table["left_index"].iloc[:2].tolist() == ["a", "b"]
+        assert result.table["right_index"].iloc[1:].tolist() == ["b", "c"]
+
+
+class TestFieldEqualityJoin:
+    def test_on_shorthand_uses_field_equality_strategy(self):
+        left = _dataset(
+            pd.DataFrame({"group": [1, 2, 2]}, index=["l1", "l2", "l3"]),
+            ValueField(name="group", dtype=int),
+        )
+        right = _dataset(
+            pd.DataFrame({"group": [2, 2]}, index=["r1", "r2"]),
+            ValueField(name="group", dtype=int),
+        )
+
+        result = join(left, right, on="group")
+
+        assert result.table.to_dict("list") == {
+            "left_index": ["l2", "l2", "l3", "l3"],
+            "right_index": ["r1", "r2", "r1", "r2"],
+        }
+
+    def test_explicit_field_equality_strategy(self):
+        left = _dataset(
+            pd.DataFrame({"group": [1, 2]}, index=["l1", "l2"]),
+            ValueField(name="group", dtype=int),
+        )
+        right = _dataset(
+            pd.DataFrame({"group": [2, 3]}, index=["r1", "r2"]),
+            ValueField(name="group", dtype=int),
+        )
+
+        result = join(left, right, strategy=FieldEqualityJoin(on=("group",)))
+
+        assert result.table.to_dict("list") == {
+            "left_index": ["l2"],
+            "right_index": ["r1"],
+        }
+
+    def test_field_equality_left_join_keeps_unmatched_left_rows(self):
+        left = _dataset(
+            pd.DataFrame({"group": [1, 2]}, index=["l1", "l2"]),
+            ValueField(name="group", dtype=int),
+        )
+        right = _dataset(
+            pd.DataFrame({"group": [2]}, index=["r1"]),
+            ValueField(name="group", dtype=int),
+        )
+
+        result = join(left, right, on="group", how="left")
+
+        assert result.table["left_index"].tolist() == ["l1", "l2"]
+        assert result.table["right_index"].isna().tolist() == [True, False]
+        assert result.table["right_index"].iloc[1] == "r1"
+
+
+class TestJoinErrors:
+    def test_rejects_invalid_how(self):
+        left = _dataset(pd.DataFrame({"x": [1]}, index=["a"]), ValueField(name="x", dtype=int))
+        right = _dataset(pd.DataFrame({"x": [1]}, index=["a"]), ValueField(name="x", dtype=int))
+
+        with pytest.raises(ValueError, match="how"):
+            join(left, right, how="sideways")
+
+    def test_requires_two_datasets(self):
+        left = _dataset(pd.DataFrame({"x": [1]}, index=["a"]), ValueField(name="x", dtype=int))
+
+        with pytest.raises(ValueError, match="exactly two"):
+            join(left)
+
+    def test_rejects_missing_on_field(self):
+        left = _dataset(pd.DataFrame({"x": [1]}, index=["a"]), ValueField(name="x", dtype=int))
+        right = _dataset(pd.DataFrame({"x": [1]}, index=["a"]), ValueField(name="x", dtype=int))
+
+        with pytest.raises(ValueError, match="not present"):
+            join(left, right, on="missing")
+
+    def test_rejects_index_field_as_on_field_for_mvp(self):
+        left = _dataset(pd.DataFrame({"x": [1]}, index=["a"]), ValueField(name="x", dtype=int))
+        right = _dataset(pd.DataFrame({"x": [1]}, index=["a"]), ValueField(name="x", dtype=int))
+
+        with pytest.raises(ValueError, match="table columns"):
+            join(left, right, on="item_id")
+
+    def test_rejects_strategy_and_on_together(self):
+        left = _dataset(pd.DataFrame({"x": [1]}, index=["a"]), ValueField(name="x", dtype=int))
+        right = _dataset(pd.DataFrame({"x": [1]}, index=["a"]), ValueField(name="x", dtype=int))
+
+        with pytest.raises(ValueError, match="either 'strategy' or 'on'"):
+            join(left, right, strategy=FieldEqualityJoin(on=("x",)), on="x")
+
+    def test_dimension_join_is_reserved_for_dimension_scope_support(self):
+        left = _dataset(pd.DataFrame({"x": [1]}, index=["a"]), ValueField(name="x", dtype=int))
+        right = _dataset(pd.DataFrame({"x": [1]}, index=["a"]), ValueField(name="x", dtype=int))
+
+        with pytest.raises(NotImplementedError, match="DimensionJoin"):
+            join(left, right, strategy=DimensionJoin())
+
+    def test_join_plan_has_empty_couplings(self):
+        left = _dataset(pd.DataFrame({"x": [1]}, index=["a"]), ValueField(name="x", dtype=int))
+        right = _dataset(pd.DataFrame({"x": [1]}, index=["a"]), ValueField(name="x", dtype=int))
+
+        result = join(left, right)
+
+        assert result.couplings.couplings == ()

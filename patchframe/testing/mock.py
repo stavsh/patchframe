@@ -31,13 +31,18 @@ Usage
 from __future__ import annotations
 
 import uuid
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Sequence
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pandas as pd
 
 from patchframe.data.accessor import DataAccessor
+
+if TYPE_CHECKING:
+    from patchframe.dataset.dataset import Dataset
+
 from patchframe.data.descriptor import SourceDescriptor
 from patchframe.data.dimensioned_slice import DimensionedSlice
 from patchframe.data.dimensions import DimensionIndex, Dimensions
@@ -101,7 +106,7 @@ class MockDataSource(DataSource):
     _source_id: str = field(default_factory=lambda: str(uuid.uuid4()))
 
     @classmethod
-    def open(cls, descriptor: SourceDescriptor) -> "MockDataSource":
+    def open(cls, descriptor: SourceDescriptor) -> MockDataSource:
         return cls(
             dimensions=descriptor.capabilities.get("dimensions", Dimensions()),
             _extents=descriptor.open_config.get("extents", {}),
@@ -124,9 +129,7 @@ class MockDataSource(DataSource):
         item_extent = self._extents[accessor.item_id]
         if accessor.dimensioned_slice is None:
             return item_extent
-        return DimensionedSlice(
-            dims={**item_extent.dims, **accessor.dimensioned_slice.dims}
-        )
+        return DimensionedSlice(dims={**item_extent.dims, **accessor.dimensioned_slice.dims})
 
     def _shape_for(self, accessor: DataAccessor) -> tuple[int, ...]:
         resolved = self.dimensions.resolve(self._effective_slice(accessor))
@@ -223,13 +226,68 @@ class make_mock_dataset(CreationOperator):
         df = pd.DataFrame(index=pd.Index(ids, name="item_id"))
         for field_name in data_fields:
             df[field_name] = [
-                DataAccessor(source_desc_id=source_desc_id, item_id=iid)
-                for iid in ids
+                DataAccessor(source_desc_id=source_desc_id, item_id=iid) for iid in ids
             ]
 
-        schema = Schema(fields=(
-            IndexField(name="item_id"),
-            *(DataField(name=f) for f in data_fields),
-        ))
+        schema = Schema(
+            fields=(
+                IndexField(name="item_id"),
+                *(DataField(name=f) for f in data_fields),
+            )
+        )
 
         return DatasetState(schema=schema, table=df, couplings=CouplingSet())
+
+
+def make_mock_dataset_from_dims(
+    ds: Dataset,
+    *,
+    data_field: str = "data",
+    seed: int | None = None,
+) -> Dataset:
+    """Create a mock dataset whose array extents are derived from DimensionField columns.
+
+    Scans the schema for DimensionField entries, groups fields by their
+    ``.dimension`` object (in schema order), and calls ``dimension.spec(*values)``
+    per row to build a per-item DimensionedSlice extent.  The resulting extents
+    are passed to ``make_mock_dataset``, which returns a fresh dataset containing
+    ``item_id`` and a single data column.
+
+    Parameters
+    ----------
+    ds:
+        Dataset with DimensionField columns encoding per-row extents.
+    data_field:
+        Name of the single data column in the returned dataset. Defaults to
+        ``"data"``.
+    seed:
+        Optional seed for reproducible array generation.
+    """
+    from patchframe.dataset.fields import DimensionField
+
+    dim_to_fields: dict[Any, list[Any]] = {}
+    for f in ds.schema:
+        if isinstance(f, DimensionField):
+            dim_to_fields.setdefault(f.dimension, []).append(f)
+
+    if not dim_to_fields:
+        raise ValueError("make_mock_dataset_from_dims: no DimensionField columns in schema.")
+
+    dimensions = Dimensions(tuple(dim_to_fields.keys()))
+
+    extents: dict[Any, DimensionedSlice] = {}
+    for item_id, row in ds.table.iterrows():
+        dims: dict[str, Any] = {}
+        for dim, fields in dim_to_fields.items():
+            values = tuple(row[f.name] for f in fields)
+            fragment = dim.spec(*values)
+            dims.update(fragment.dims)
+        extents[item_id] = DimensionedSlice(dims=dims)
+
+    return make_mock_dataset(
+        list(ds.table.index),
+        dimensions,
+        extents,
+        data_fields=(data_field,),
+        seed=seed,
+    )
