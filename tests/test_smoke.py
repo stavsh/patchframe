@@ -8,9 +8,9 @@ import pytest
 
 from patchframe.data.dimensions import Dimensions, IndexDimension, TemporalDimension
 from patchframe.data.manager import reset_default_manager
-from patchframe.dataset.couplings import CouplingSet
 from patchframe.dataset.fields import DataField, IndexField, ValueField
 from patchframe.dataset.schema import Schema
+from patchframe.dataset.state import DatasetState
 from patchframe.ops.builtin.make_from_dataframe import make_from_dataframe
 from patchframe.testing.mock import make_mock_dataset
 
@@ -121,6 +121,20 @@ class TestMakeMockDataset:
 # ---------------------------------------------------------------------------
 
 class TestMakeFromDataframe:
+    def test_dataset_state_rejects_duplicate_index(self):
+        df = pd.DataFrame({"x": [1, 2]}, index=["a", "a"])
+        schema = Schema(fields=(ValueField(name="x", dtype=int),))
+
+        with pytest.raises(ValueError, match="index must be unique"):
+            DatasetState(schema=schema, table=df)
+
+    def test_make_from_dataframe_rejects_duplicate_index(self):
+        df = pd.DataFrame({"x": [1, 2]}, index=["a", "a"])
+        schema = Schema(fields=(ValueField(name="x", dtype=int),))
+
+        with pytest.raises(ValueError, match="index must be unique"):
+            make_from_dataframe(df, schema)
+
     def test_basic_value_fields(self):
         df = pd.DataFrame({"score": [1.0, 2.0, 3.0], "label": ["a", "b", "c"]})
         schema = Schema(fields=(

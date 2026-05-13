@@ -27,37 +27,37 @@ from patchframe.data.dimensions import Dimension
 # ---------------------------------------------------------------------------
 
 _BUILTIN_TO_NULLABLE: dict[type, pd.api.extensions.ExtensionDtype] = {
-    int:   pd.Int64Dtype(),
+    int: pd.Int64Dtype(),
     float: pd.Float64Dtype(),
-    str:   pd.StringDtype(),
-    bool:  pd.BooleanDtype(),
+    str: pd.StringDtype(),
+    bool: pd.BooleanDtype(),
 }
 
 _NUMPY_TO_NULLABLE: dict[np.dtype, pd.api.extensions.ExtensionDtype] = {
-    np.dtype("int8"):    pd.Int8Dtype(),
-    np.dtype("int16"):   pd.Int16Dtype(),
-    np.dtype("int32"):   pd.Int32Dtype(),
-    np.dtype("int64"):   pd.Int64Dtype(),
-    np.dtype("uint8"):   pd.UInt8Dtype(),
-    np.dtype("uint16"):  pd.UInt16Dtype(),
-    np.dtype("uint32"):  pd.UInt32Dtype(),
-    np.dtype("uint64"):  pd.UInt64Dtype(),
+    np.dtype("int8"): pd.Int8Dtype(),
+    np.dtype("int16"): pd.Int16Dtype(),
+    np.dtype("int32"): pd.Int32Dtype(),
+    np.dtype("int64"): pd.Int64Dtype(),
+    np.dtype("uint8"): pd.UInt8Dtype(),
+    np.dtype("uint16"): pd.UInt16Dtype(),
+    np.dtype("uint32"): pd.UInt32Dtype(),
+    np.dtype("uint64"): pd.UInt64Dtype(),
     np.dtype("float32"): pd.Float32Dtype(),
     np.dtype("float64"): pd.Float64Dtype(),
-    np.dtype("bool"):    pd.BooleanDtype(),
-    np.dtype("object"):  pd.StringDtype(),
+    np.dtype("bool"): pd.BooleanDtype(),
+    np.dtype("object"): pd.StringDtype(),
 }
 
 # Reverse map: nullable dtype type -> numpy equivalent (for lenient validation)
 _NULLABLE_TO_NUMPY: dict[type, np.dtype] = {
-    pd.Int8Dtype:    np.dtype("int8"),
-    pd.Int16Dtype:   np.dtype("int16"),
-    pd.Int32Dtype:   np.dtype("int32"),
-    pd.Int64Dtype:   np.dtype("int64"),
-    pd.UInt8Dtype:   np.dtype("uint8"),
-    pd.UInt16Dtype:  np.dtype("uint16"),
-    pd.UInt32Dtype:  np.dtype("uint32"),
-    pd.UInt64Dtype:  np.dtype("uint64"),
+    pd.Int8Dtype: np.dtype("int8"),
+    pd.Int16Dtype: np.dtype("int16"),
+    pd.Int32Dtype: np.dtype("int32"),
+    pd.Int64Dtype: np.dtype("int64"),
+    pd.UInt8Dtype: np.dtype("uint8"),
+    pd.UInt16Dtype: np.dtype("uint16"),
+    pd.UInt32Dtype: np.dtype("uint32"),
+    pd.UInt64Dtype: np.dtype("uint64"),
     pd.Float32Dtype: np.dtype("float32"),
     pd.Float64Dtype: np.dtype("float64"),
     pd.BooleanDtype: np.dtype("bool"),
@@ -96,6 +96,7 @@ def dtype_compatible(col_dtype: Any, target: pd.api.extensions.ExtensionDtype) -
 # ---------------------------------------------------------------------------
 # Field hierarchy
 # ---------------------------------------------------------------------------
+
 
 @dataclass(frozen=True, slots=True)
 class Field:
@@ -155,6 +156,19 @@ class IndexField(Field):
 
 
 @dataclass(frozen=True, slots=True)
+class IndexColumnField(Field):
+    """Table-backed index values from a secondary dataset index."""
+
+    logical_type: ClassVar[str] = "index_column"
+    nullable: bool = True
+    primary: bool = False
+
+    def __post_init__(self) -> None:
+        Field.__post_init__(self)
+        object.__setattr__(self, "primary", False)
+
+
+@dataclass(frozen=True, slots=True)
 class ValueField(Field):
     """Regular scalar or object column."""
 
@@ -168,6 +182,11 @@ class DimensionField(Field):
     logical_type: ClassVar[str] = "dimension"
     _: KW_ONLY
     dimension: Dimension
+
+    @classmethod
+    def from_dim(cls, dimension: Dimension, name: str, **kwargs: Any) -> DimensionField:
+        # TODO: once Dimension carries dtype info, default dtype from dimension.dtype here
+        return cls(name=name, dimension=dimension, **kwargs)
 
 
 @dataclass(frozen=True, slots=True)

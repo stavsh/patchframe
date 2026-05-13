@@ -7,6 +7,11 @@ from typing import Any
 import pandas as pd
 
 from patchframe.dataset.couplings import Coupling, CouplingSet
+from patchframe.dataset.field_composition import (
+    CompositionContext,
+    compose_column,
+    normalize_column,
+)
 from patchframe.dataset.fields import Field
 from patchframe.dataset.schema import Schema
 from patchframe.dataset.state import DatasetState
@@ -44,7 +49,7 @@ class add_column(DatasetOperator):
         couplings: tuple[Coupling, ...] = (),
         **_: Any,
     ) -> Schema:
-        return state.schema.add(field_def)
+        return state.schema.add(self._compose_field(state, field_def))
 
     def apply_table(
         self,
@@ -55,11 +60,17 @@ class add_column(DatasetOperator):
         couplings: tuple[Coupling, ...] = (),
         **_: Any,
     ) -> pd.DataFrame:
+        field_def = self._compose_field(state, field_def)
         df = state.table.copy()
         if isinstance(values, pd.Series):
             df[field_def.name] = values.values
         else:
             df[field_def.name] = values
+        df[field_def.name] = normalize_column(
+            df[field_def.name],
+            field_def,
+            CompositionContext(role="column_add", op=self.name),
+        )
         return df
 
     def apply_couplings(
@@ -72,3 +83,10 @@ class add_column(DatasetOperator):
         **_: Any,
     ) -> CouplingSet:
         return state.couplings.add(*couplings)
+
+    def _compose_field(self, state: DatasetState, field_def: Field) -> Field:
+        return compose_column(
+            field_def,
+            state.schema.fields,
+            CompositionContext(role="column_add", op=self.name),
+        )
