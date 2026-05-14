@@ -353,6 +353,259 @@ Differences from pandas:
   unless an explicit collision policy resolves the collision.
 - Pandas does not validate typed schema semantics or coupling safety.
 
+## Composition policies
+
+This section documents the intended composition model. The concat behavior is
+implemented first; the join/merge split is the design target that merge should
+move toward.
+
+Composition in `patchframe` is not just dataframe concatenation. A composition
+operator must combine:
+
+- table values
+- typed schema fields
+- coupling declarations
+- source/provenance records
+
+This is the main reason patchframe composition is stricter than `pandas`.
+Pandas can keep duplicate column names, append suffixes, or silently widen
+dtypes. Patchframe has to preserve a predictable dataset schema and coupling
+graph, so ambiguous cases raise by default.
+
+### Policy layers
+
+Composition is organized as several policy layers:
+
+1. **Preparation policy**: rename, drop, or prefix fields before composition.
+   This must rewrite schema fields, table columns, and coupling `FieldRef`
+   references together. Automatic preparation is not implemented yet; rename
+   collisions currently raise.
+2. **Row field compatibility policy**: decide whether fields with the same name
+   can be stacked by rows.
+3. **Column bucket policy**: decide how fields behave when they coexist in the
+   same output schema, even if their names do not collide. Primary-field
+   downgrade is a bucket policy.
+4. **Column collision value policy**: decide how same-name table columns are
+   resolved when both sides contribute values.
+5. **Coupling policy**: decide which couplings survive composition and whether
+   coupling references must be rewritten.
+6. **Join policy**: decide which rows from two datasets correspond. This is
+   intentionally separate from merge.
+
+### Field policies
+
+Field composition is implemented through an external policy registry. The
+current built-in policies are:
+
+- `Field`: row stacking requires the same concrete field type and same dtype.
+  A type or dtype mismatch raises `TypeError`.
+- `ValueField`: row stacking requires the same concrete field type, but dtype
+  differences are allowed. If dtypes differ, the output field has `dtype=None`
+  and pandas owns the resulting value dtype.
+- `DimensionField`: row stacking and key coalescing require the same concrete
+  field type, same dtype, and same `dimension` object. Dimension mismatch raises
+  `TypeError`.
+- `IndexField`: the first output index remains an `IndexField`. Additional
+  dataset indexes are downgraded into nullable, table-backed
+  `IndexColumnField` fields.
+
+All normal table columns are nullable by design. `IndexField` is special because
+it represents the DataFrame index itself. `IndexColumnField` stores index values
+that were downgraded into an ordinary table column during composition.
+
+### Column collision values
+
+When two table columns map to the same output field, the value policy is
+configured with `ColumnCollisionStrategy`:
+
+- `mode="error"`: raise on collision. This is the default.
+- `mode="keep"`: keep the chosen side and discard the other side.
+- `mode="update_missing"`: start with the chosen side and fill missing values
+  from the other side.
+- `mode="coalesce"`: currently equivalent to `update_missing`.
+- `mode="rename"`: raise for now. Rename/prefix/drop preparation is not
+  implemented yet.
+
+`side="left"` chooses the existing/left column. `side="right"` chooses the
+incoming/right column.
+
+`on_conflict="raise"` raises when both sides have non-null, unequal values in
+the same row. `on_conflict="keep_chosen"` keeps the chosen side in that case.
+
+The important difference from pandas is that patchframe does not use automatic
+suffixes as the default conflict resolution. A same-name field collision is a
+schema decision, not just a dataframe-label issue.
+
+### Coupling policy
+
+Couplings are declarations over field names. If a composition preparation step
+renames a field, coupling `FieldRef`s must be rewritten through the same mapping.
+The existing `rename` operator already does this through
+`CouplingSet.rewrite_field_names(...)`. Composition rename/prefix preparation
+must use the same rule.
+
+Current coupling defaults:
+
+- Column concat: union coupling sets after any field-reference rewrites. Exact
+  duplicate couplings are deduplicated. Coupling-specific simplification is not
+  implemented yet.
+- Row concat: preserve couplings only when all inputs have exactly the same
+  `CouplingSet`. If coupling sets differ and any are non-empty, row concat
+  raises. The user should consume the coupled fields first, then reapply
+  couplings after concat.
+- Merge: expected to use conservative coupling rules over the composed output.
+  Coupling-specific merge policies are intentionally left as future extension
+  points.
+
+The row-concat rule is stricter than pandas because pandas has no equivalent of
+a coupling graph. A single output `CouplingSet` applies to every row. Blindly
+unioning different input couplings could make a coupling from one dataset affect
+rows that came from another dataset.
+
+### `concat_rows`
+
+`concat_rows` stacks datasets by rows.
+
+Schema behavior:
+
+- Fields are matched by name.
+- Field compatibility is checked through the row field policy.
+- Missing columns are added as nullable columns filled with missing values.
+- Primary fields are bucketed through column policy; later primaries of the
+  same field type are downgraded.
+- Additional dataset indexes become `IndexColumnField` columns.
+
+Raises:
+
+- Raises if no datasets are provided.
+- Raises if same-name fields are incompatible by policy.
+- Raises if `DimensionField` dimensions differ.
+- Raises if non-empty coupling sets differ across inputs.
+
+Differences from pandas:
+
+- Pandas row concat accepts many dtype coercions. Patchframe only relaxes dtype
+  where field policy allows it, currently `ValueField`.
+- Pandas has no dimension compatibility check.
+- Pandas does not model couplings, so it cannot detect unsafe coupling unions.
+
+### `concat_columns`
+
+`concat_columns` composes datasets by columns and aligns rows by DataFrame
+index.
+
+Schema behavior:
+
+- Fields are added in input order.
+- Unique field names still pass through bucket policy.
+- Primary downgrade can happen even without name collision.
+- A second `IndexField` becomes an `IndexColumnField`; its values are
+  materialized from that input index into the output table.
+- Same-name fields are handled by `ColumnCollisionStrategy`.
+
+Raises:
+
+- Raises if no datasets are provided.
+- Raises on same-name collisions with the default `mode="error"`.
+- Raises for `mode="rename"` because automatic rename preparation is not
+  implemented yet.
+- Raises when `on_conflict="raise"` and both sides contain unequal non-null
+  values.
+- Raises if field policies reject the collision field composition.
+
+Differences from pandas:
+
+- Pandas `concat(axis=1)` can produce duplicate column names. Patchframe schemas
+  cannot.
+- Pandas does not have primary field buckets. Patchframe downgrades later
+  primary fields even when names differ.
+- Pandas treats indexes only as alignment labels. Patchframe also models index
+  identity in the schema, so secondary indexes are explicit table columns.
+
+### `join`
+
+Join should be separate from merge. A join operator decides row correspondence
+and outputs a simple dataset representing the mapping between two input
+datasets.
+
+The join-plan dataset has its own unique row index, usually represented by
+`IndexField(name="join_id")`. Its canonical mapping columns should be index
+labels from the input datasets:
+
+- `left_index`: nullable index value into the left dataset
+- `right_index`: nullable index value into the right dataset
+
+Optional columns may include:
+
+- `left_pos` and `right_pos` as cached positional lookups
+- score, rank, distance, overlap, or strategy-specific metadata
+
+Index labels are canonical because dataset indexes are unique by invariant.
+This lets a join-plan dataset behave like any other patchframe dataset: users
+can filter it, concatenate it with other compatible join plans, inspect it,
+persist it, and then pass the resulting plan to merge. Positional columns can
+still be useful as an optimization, but they are not the semantic identity of
+the join.
+
+Possible join strategies:
+
+- equality on one or more fields
+- index alignment
+- left, right, inner, or outer inclusion rules
+- nearest temporal match
+- interval overlap
+- spatial join in an extension package
+- scored or ranked candidate retrieval
+
+Raises:
+
+- Raises if a strategy references missing fields.
+- Raises if a strategy requires compatible field semantics and the fields are
+  incompatible.
+- Raises if a strategy cannot represent the requested match type without unique
+  row identity.
+
+Difference from pandas:
+
+- Pandas hides the row-matching plan inside `merge`. Patchframe exposes it as a
+  dataset so users can inspect, filter, concatenate, visualize, cache, sample,
+  or reuse the match plan before materializing a merge.
+
+### `merge`
+
+Merge should consume two datasets and a join-plan dataset. It should not decide
+which rows match.
+
+Expected merge behavior:
+
+- Validate that the join plan contains valid `left_index` and `right_index`
+  mappings.
+- Gather rows from the left and right datasets by unique index label according
+  to the join plan.
+- Compose output fields through column bucket policy.
+- Resolve same-name non-key fields through `ColumnCollisionStrategy`.
+- Apply conservative coupling policy.
+
+Raises:
+
+- Raises if the join plan is missing required mapping columns.
+- Raises if non-null index labels in the join plan are missing from the
+  corresponding input dataset.
+- Raises on same-name collisions with default `mode="error"`.
+- Raises for `mode="rename"` until rename/prefix preparation is implemented.
+- Raises when field policies reject a composed field.
+- Raises when coupling policy cannot preserve semantics safely.
+
+Differences from pandas:
+
+- Pandas `merge` combines join planning and row materialization in one call.
+  Patchframe separates them.
+- Pandas allows duplicate index labels. Patchframe requires unique dataset
+  indexes, so merge can use index labels as stable row identity.
+- Pandas automatically suffixes overlapping non-key columns. Patchframe raises
+  unless an explicit collision policy resolves the collision.
+- Pandas does not validate typed schema semantics or coupling safety.
+
 ## First concrete operator
 
 - `make_from_dataframe` — turns an existing dataframe and explicit schema into a dataset
