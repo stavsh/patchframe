@@ -8,6 +8,9 @@
 - explicit dataset operations
 - source tracking
 
+For a user-facing overview of why this package exists and where it is useful,
+start with [Intro / Motivation](docs/intro.md).
+
 The core package is intentionally small and non-geometric. It models datasets as typed **fields** transformed by **operators** and related through explicit **couplings**. Structural changes are declared through explicit **transitions**.
 
 ## Status
