@@ -1,47 +1,29 @@
-"""
-AudioSet dataset creation example.
+"""AudioSet example built around separate label and audio sources.
 
-Demonstrates how to build a patchframe Dataset from an external file-backed
-source without copying any audio into memory.
+The source-specific work lives in the makers:
 
-Key concepts
-------------
-- WavDataSource  : a minimal DataSource that reads WAV files on demand.
-                   describe() returns the SourceDescriptor used for
-                   registration and re-opening.
-- make_audioset  : a CreationOperator. make_source() returns a live
-                   WavDataSource; build() constructs the DatasetState.
-- TemporalDimension (from patchframe.data.dimensions): spec() accepts
-                   start/end in seconds; to_index() converts to sample indices.
+- ``make_audio_files`` parses the WAV side
+- ``make_audioset_labels`` parses the label/segment side
+- ``merge_audio_labels`` composes them through ``join``/``merge``
 
-Usage
------
-    from examples.audioset import make_audioset
-    from patchframe.data.dimensions import TemporalDimension
+The conventional usage path stays short:
 
-    ds = make_audioset("audioset_balanced_train.csv", "/data/audioset/wavs/")
+    ds = make_audioset(csv_path, wav_dir)
+    row = ds["clip_id"]
+    audio = row["audio"]
 
-    # lazy access — nothing is loaded yet
-    accessor = ds.table["audio"].iloc[0]
-
-    # full clip
-    audio = accessor.materialize()
-
-    # lazy sub-clip: 1.0 s to 3.5 s
-    time_dim = TemporalDimension(name="time", sample_rate=16000)
-    clipped = accessor.slice(time_dim.spec(1.0, 3.5)).materialize()
-
-Requirements
-------------
-    pip install soundfile
+By default ``audio`` is already materialized through a coupling, so the row
+access path can be used directly for visualization and batch loading.
 """
 
 from __future__ import annotations
 
 import os
+from collections import Counter
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Literal
 
 import numpy as np
 import pandas as pd
@@ -49,19 +31,33 @@ import pandas as pd
 from patchframe.data.accessor import DataAccessor
 from patchframe.data.descriptor import SourceDescriptor
 from patchframe.data.dimensioned_slice import DimensionedSlice
-from patchframe.data.dimensions import Dimensions, TemporalDimension
+from patchframe.data.dimensions import CategoricalDimension, Dimensions, TemporalDimension
 from patchframe.data.source import DataSource
-from patchframe.dataset.couplings import CouplingSet
-from patchframe.dataset.fields import DataField, IndexField, ValueField
+from patchframe.dataset.dataset import Dataset
+from patchframe.dataset.field_composition import ColumnCollisionStrategy
+from patchframe.dataset.fields import DataField, DimensionField, IndexField, ValueField
 from patchframe.dataset.provenance import DatasetSourceInfo
 from patchframe.dataset.schema import Schema
 from patchframe.dataset.state import DatasetState
 from patchframe.ops.base import MISSING, CreationOperator, Parameter
+from patchframe.ops.builtin.bind_dimensions import bind_dimensions
+from patchframe.ops.builtin.bind_materialize import bind_materialize
+from patchframe.ops.builtin.bind_slice import bind_slice
+from patchframe.ops.builtin.join import join
+from patchframe.ops.builtin.merge import merge
+from patchframe.ops.builtin.set_index import set_index
 
+AudioLayout = Literal["segments", "full"]
+ChannelLayout = Literal["channels_first", "channels_last"]
 
-# ---------------------------------------------------------------------------
-# WavDataSource
-# ---------------------------------------------------------------------------
+AUDIO_FIELD = "audio"
+SOURCE_AUDIO_ID_FIELD = "audio_id"
+SEGMENT_FIELD = "segment"
+SEGMENT_START_FIELD = "segment_start_seconds"
+SEGMENT_END_FIELD = "segment_end_seconds"
+LABELS_FIELD = "labels"
+_AUDIOSET_CSV_COLUMNS = ("ytid", "start_seconds", "end_seconds", "labels")
+
 
 @dataclass(slots=True)
 class WavDataSource(DataSource):
@@ -70,54 +66,56 @@ class WavDataSource(DataSource):
     source_type: str = "wav"
     thread_safe: bool = True
     fork_safe: bool = True
-    dimensions: Dimensions = field(default_factory=lambda: Dimensions((TemporalDimension(name="time"),)))
+    dimensions: Dimensions = field(default_factory=lambda: _audio_dimensions(16_000))
     base_dir: str = ""
-    sample_rate: int | None = None
+    sample_rate: int = 16_000
     file_template: str = "{item_id}.wav"
+    channel_layout: ChannelLayout = "channels_first"
 
     @classmethod
-    def open(cls, descriptor: SourceDescriptor) -> "WavDataSource":
+    def open(cls, descriptor: SourceDescriptor) -> WavDataSource:
+        sample_rate = descriptor.open_config.get("sample_rate", 16_000)
         return cls(
             dimensions=descriptor.capabilities.get(
                 "dimensions",
-                Dimensions((TemporalDimension(name="time"),)),
+                _audio_dimensions(sample_rate),
             ),
             base_dir=descriptor.open_config["base_dir"],
-            sample_rate=descriptor.open_config.get("sample_rate"),
+            sample_rate=sample_rate,
             file_template=descriptor.open_config.get("file_template", "{item_id}.wav"),
+            channel_layout=descriptor.open_config.get("channel_layout", "channels_first"),
         )
 
     def describe(self) -> SourceDescriptor:
         return SourceDescriptor(
-            source_type="wav",
-            source_id=f"wav:{os.path.abspath(self.base_dir)}",
+            source_type=self.source_type,
+            source_id=(
+                f"wav:{os.path.abspath(self.base_dir)}:"
+                f"{self.sample_rate}:{self.file_template}:{self.channel_layout}"
+            ),
             open_config={
                 "base_dir": self.base_dir,
                 "sample_rate": self.sample_rate,
                 "file_template": self.file_template,
+                "channel_layout": self.channel_layout,
             },
             capabilities={"dimensions": self.dimensions},
         )
 
-    def _path_for(self, item_id: Any) -> str:
-        return os.path.join(self.base_dir, self.file_template.format(item_id=item_id))
-
     def materialize(self, accessor: DataAccessor) -> np.ndarray:
-        try:
-            import soundfile as sf
-        except ImportError:
-            raise ImportError("soundfile is required for WavDataSource. Install with: pip install soundfile")
-        audio, _ = sf.read(self._path_for(accessor.item_id), dtype="float32", always_2d=False)
-        if accessor.dimensioned_slice is not None:
-            resolved = self.dimensions.resolve(accessor.dimensioned_slice)
-            audio = audio[tuple(di.value for di in resolved)]
+        sf = _soundfile()
+        start, stop = self._sample_bounds(accessor.dimensioned_slice)
+        read_kwargs: dict[str, Any] = {"dtype": "float32", "always_2d": True}
+        if start is not None or stop is not None:
+            read_kwargs["start"] = start or 0
+            read_kwargs["stop"] = stop
+        audio, _ = sf.read(self._path_for(accessor.item_id), **read_kwargs)
+        if self.channel_layout == "channels_first":
+            audio = audio.T
         return audio
 
     def inspect(self, accessor: DataAccessor) -> Mapping[str, Any]:
-        try:
-            import soundfile as sf
-        except ImportError:
-            raise ImportError("soundfile is required for WavDataSource. Install with: pip install soundfile")
+        sf = _soundfile()
         info = sf.info(self._path_for(accessor.item_id))
         return {
             "frames": info.frames,
@@ -134,65 +132,146 @@ class WavDataSource(DataSource):
             raise ValueError(f"DimensionedSlice references unknown dimensions: {sorted(unknown)}")
         return accessor.slice(dim_slice)
 
+    def _path_for(self, item_id: Any) -> str:
+        return os.path.join(self.base_dir, self.file_template.format(item_id=item_id))
 
-# ---------------------------------------------------------------------------
-# make_audioset
-# ---------------------------------------------------------------------------
+    def _sample_bounds(self, dim_slice: DimensionedSlice | None) -> tuple[int | None, int | None]:
+        if dim_slice is None:
+            return None, None
+        resolved = self.dimensions.resolve(dim_slice)
+        if not resolved:
+            return None, None
+        value = resolved[0].value
+        if isinstance(value, slice):
+            return value.start, value.stop
+        if isinstance(value, int | np.integer):
+            pos = int(value)
+            return pos, pos + 1
+        return None, None
 
-_AUDIOSET_CSV_COLUMNS = ["ytid", "start_seconds", "end_seconds", "labels"]
 
+class make_audio_files(CreationOperator):
+    """Build a dataset over WAV files without parsing labels."""
 
-class make_audioset(CreationOperator):
-    """Build an AudioSet dataset from a metadata CSV and a WAV file directory.
-
-    Parameters
-    ----------
-    metadata_path:
-        Path to the AudioSet metadata CSV. Lines starting with ``#`` are
-        treated as comments. Expected columns (no header in file):
-        ytid, start_seconds, end_seconds, positive_labels.
-    base_dir:
-        Directory containing one WAV file per clip.
-    sample_rate:
-        Expected sample rate of the WAV files. Defaults to 16000.
-    file_template:
-        Filename pattern. ``{item_id}`` is replaced with the ytid.
-        Defaults to ``"{item_id}.wav"``.
-    """
-
-    sample_rate = Parameter(default=16000)
+    sample_rate = Parameter(default=16_000)
     file_template = Parameter(default="{item_id}.wav")
-
-    def _resolve(self, sample_rate: Any, file_template: Any) -> tuple[int, str]:
-        return (
-            self.resolve_param("sample_rate", sample_rate),
-            self.resolve_param("file_template", file_template),
-        )
+    channel_layout = Parameter(default="channels_first")
 
     def make_source(
         self,
-        metadata_path: str | Path,
+        audio_ids: Any,
         base_dir: str | Path,
         *,
         sample_rate: int | object = MISSING,
         file_template: str | object = MISSING,
+        channel_layout: ChannelLayout | object = MISSING,
         **_: Any,
     ) -> WavDataSource:
-        sr, ft = self._resolve(sample_rate, file_template)
+        sr, ft, layout = self._resolve(sample_rate, file_template, channel_layout)
         return WavDataSource(
-            dimensions=Dimensions((TemporalDimension(name="time", sample_rate=sr),)),
+            dimensions=_audio_dimensions(sr),
             base_dir=str(base_dir),
             sample_rate=sr,
             file_template=ft,
+            channel_layout=layout,
         )
 
     def generate_source_info(
         self,
-        metadata_path: str | Path,
+        audio_ids: Any,
         base_dir: str | Path,
         *,
         sample_rate: int | object = MISSING,
         file_template: str | object = MISSING,
+        channel_layout: ChannelLayout | object = MISSING,
+        source_desc_id: int | None = None,
+        **_: Any,
+    ) -> DatasetSourceInfo:
+        return DatasetSourceInfo(
+            source_uri=f"file://{os.path.abspath(str(base_dir))}",
+            source_type="wav_files",
+            source_name="Audio files",
+        )
+
+    def build(
+        self,
+        audio_ids: Any,
+        base_dir: str | Path,
+        *,
+        sample_rate: int | object = MISSING,
+        file_template: str | object = MISSING,
+        channel_layout: ChannelLayout | object = MISSING,
+        audio_field: str = AUDIO_FIELD,
+        source_desc_id: int | None = None,
+        source_manager: Any = None,
+        **_: Any,
+    ) -> DatasetState:
+        sr, ft, _ = self._resolve(sample_rate, file_template, channel_layout)
+        ids = tuple(str(audio_id) for audio_id in audio_ids)
+        table = pd.DataFrame(index=pd.Index(ids, name="audio_file_id"))
+        table[SOURCE_AUDIO_ID_FIELD] = pd.Series(ids, index=table.index, dtype="string")
+        table["audio_path"] = pd.Series(
+            [os.path.join(str(base_dir), ft.format(item_id=audio_id)) for audio_id in ids],
+            index=table.index,
+            dtype="string",
+        )
+        table["sample_rate"] = pd.Series(sr, index=table.index, dtype="Int64")
+        table[audio_field] = [
+            DataAccessor(
+                source_desc_id=source_desc_id,
+                item_id=audio_id,
+                manager_hint=source_manager,
+            )
+            for audio_id in ids
+        ]
+
+        schema = Schema(
+            fields=(
+                IndexField(name="audio_file_id"),
+                DimensionField.from_dim(_audio_id_dimension(), SOURCE_AUDIO_ID_FIELD, dtype=str),
+                ValueField(name="audio_path", dtype=str),
+                ValueField(name="sample_rate", dtype=int),
+                DataField(name=audio_field),
+            )
+        )
+        return DatasetState(schema=schema, table=table)
+
+    def _resolve(
+        self,
+        sample_rate: Any,
+        file_template: Any,
+        channel_layout: Any,
+    ) -> tuple[int, str, ChannelLayout]:
+        sr = self.resolve_param("sample_rate", sample_rate)
+        ft = self.resolve_param("file_template", file_template)
+        layout = self.resolve_param("channel_layout", channel_layout)
+        if layout not in {"channels_first", "channels_last"}:
+            raise ValueError("channel_layout must be either 'channels_first' or 'channels_last'.")
+        return sr, ft, layout
+
+
+class make_audioset_labels(CreationOperator):
+    """Build the label/segment side of an AudioSet dataset."""
+
+    sample_rate = Parameter(default=16_000)
+    audio_layout = Parameter(default="segments")
+
+    def make_source(
+        self,
+        metadata_path: str | Path,
+        *,
+        sample_rate: int | object = MISSING,
+        audio_layout: AudioLayout | object = MISSING,
+        **_: Any,
+    ) -> None:
+        return None
+
+    def generate_source_info(
+        self,
+        metadata_path: str | Path,
+        *,
+        sample_rate: int | object = MISSING,
+        audio_layout: AudioLayout | object = MISSING,
         source_desc_id: int | None = None,
         **_: Any,
     ) -> DatasetSourceInfo:
@@ -205,32 +284,369 @@ class make_audioset(CreationOperator):
     def build(
         self,
         metadata_path: str | Path,
+        *,
+        sample_rate: int | object = MISSING,
+        audio_layout: AudioLayout | object = MISSING,
+        source_desc_id: int | None = None,
+        **_: Any,
+    ) -> DatasetState:
+        sr, layout = self._resolve(sample_rate, audio_layout)
+        time_dim = TemporalDimension(name="time", sample_rate=sr)
+        table = _read_audioset_csv(metadata_path)
+        table[SOURCE_AUDIO_ID_FIELD] = table["ytid"].astype("string")
+        _add_segment_columns(table, layout=layout)
+        table.index = _clip_index(table)
+        table.index.name = "clip_id"
+
+        schema = Schema(
+            fields=(
+                IndexField(name="clip_id"),
+                DimensionField.from_dim(_audio_id_dimension(), SOURCE_AUDIO_ID_FIELD, dtype=str),
+                ValueField(name="start_seconds", dtype=float),
+                ValueField(name="end_seconds", dtype=float),
+                ValueField(name=LABELS_FIELD, dtype=str),
+                DimensionField.from_dim(time_dim, SEGMENT_START_FIELD, dtype=float),
+                DimensionField.from_dim(time_dim, SEGMENT_END_FIELD, dtype=float),
+            )
+        )
+        return DatasetState(schema=schema, table=table)
+
+    def _resolve(
+        self,
+        sample_rate: Any,
+        audio_layout: Any,
+    ) -> tuple[int, AudioLayout]:
+        sr = self.resolve_param("sample_rate", sample_rate)
+        layout = self.resolve_param("audio_layout", audio_layout)
+        if layout not in {"segments", "full"}:
+            raise ValueError("audio_layout must be either 'segments' or 'full'.")
+        return sr, layout
+
+
+class make_audioset(CreationOperator):
+    """Convenience wrapper that builds labels, audio files, then composes them."""
+
+    sample_rate = Parameter(default=16_000)
+    file_template = Parameter(default="{item_id}.wav")
+    audio_layout = Parameter(default="segments")
+    channel_layout = Parameter(default="channels_first")
+
+    def __call__(
+        self,
+        metadata_path: str | Path,
         base_dir: str | Path,
         *,
         sample_rate: int | object = MISSING,
         file_template: str | object = MISSING,
-        source_desc_id: int | None = None,
-        **_: Any,
-    ) -> DatasetState:
-        df = pd.read_csv(
+        audio_layout: AudioLayout | object = MISSING,
+        channel_layout: ChannelLayout | object = MISSING,
+        bind_segments: bool = True,
+        materialize_audio: bool = True,
+        audio_field: str = AUDIO_FIELD,
+        segment_field: str = SEGMENT_FIELD,
+    ) -> Dataset:
+        sr, ft, layout, channel_layout = self._resolve(
+            sample_rate,
+            file_template,
+            audio_layout,
+            channel_layout,
+        )
+        labels = make_audioset_labels(
             metadata_path,
-            comment="#",
-            header=None,
-            names=_AUDIOSET_CSV_COLUMNS,
-            skipinitialspace=True,
-        ).set_index("ytid")
+            sample_rate=sr,
+            audio_layout=layout,
+        )
+        audio_files = make_audio_files(
+            _unique_audio_ids(labels),
+            base_dir,
+            sample_rate=sr,
+            file_template=ft,
+            channel_layout=channel_layout,
+            audio_field=audio_field,
+        )
+        return merge_audio_labels(
+            labels,
+            audio_files,
+            bind_segments=bind_segments,
+            materialize_audio=materialize_audio,
+            audio_field=audio_field,
+            segment_field=segment_field,
+        )
 
-        df["audio"] = [
-            DataAccessor(source_desc_id=source_desc_id, item_id=ytid)
-            for ytid in df.index
-        ]
+    def generate_source_info(self, *args: Any, **kwargs: Any) -> DatasetSourceInfo:
+        raise NotImplementedError("make_audioset dispatches in __call__.")
 
-        schema = Schema(fields=(
-            IndexField(name="ytid"),
-            ValueField(name="start_seconds", dtype=float),
-            ValueField(name="end_seconds", dtype=float),
-            ValueField(name="labels", dtype=str),
-            DataField(name="audio"),
-        ))
+    def build(self, *args: Any, **kwargs: Any) -> DatasetState:
+        raise NotImplementedError("make_audioset dispatches in __call__.")
 
-        return DatasetState(schema=schema, table=df)
+    def _resolve(
+        self,
+        sample_rate: Any,
+        file_template: Any,
+        audio_layout: Any,
+        channel_layout: Any,
+    ) -> tuple[int, str, AudioLayout, ChannelLayout]:
+        sr = self.resolve_param("sample_rate", sample_rate)
+        ft = self.resolve_param("file_template", file_template)
+        layout = self.resolve_param("audio_layout", audio_layout)
+        ch_layout = self.resolve_param("channel_layout", channel_layout)
+        if layout not in {"segments", "full"}:
+            raise ValueError("audio_layout must be either 'segments' or 'full'.")
+        if ch_layout not in {"channels_first", "channels_last"}:
+            raise ValueError("channel_layout must be either 'channels_first' or 'channels_last'.")
+        return sr, ft, layout, ch_layout
+
+
+def bind_audio_segments(
+    dataset: Dataset,
+    *,
+    slice_field: str = SEGMENT_FIELD,
+    audio_field: str = AUDIO_FIELD,
+    start_field: str = SEGMENT_START_FIELD,
+    end_field: str = SEGMENT_END_FIELD,
+) -> Dataset:
+    """Bind AudioSet segment columns so row access returns sliced audio arrays."""
+    ds = bind_dimensions(
+        dataset,
+        slice_field=slice_field,
+        bindings={"time": (start_field, end_field)},
+    )
+    return bind_slice(ds, slice_field=slice_field, data_field=audio_field)
+
+
+def merge_audio_labels(
+    labels: Dataset,
+    audio_files: Dataset,
+    *,
+    how: str = "inner",
+    bind_segments: bool = True,
+    materialize_audio: bool = True,
+    audio_id_field: str = SOURCE_AUDIO_ID_FIELD,
+    audio_field: str = AUDIO_FIELD,
+    segment_field: str = SEGMENT_FIELD,
+) -> Dataset:
+    """Compose separately parsed label and audio-file datasets."""
+    plan = join(labels, audio_files, on=audio_id_field, how=how)
+    merged = merge(
+        labels,
+        audio_files,
+        plan,
+        collision=ColumnCollisionStrategy(mode="keep", side="left"),
+    )
+    clip_id_name = labels.schema.names()[0]
+    merged = set_index(merged, "left_index", index_name=clip_id_name)
+    if bind_segments:
+        merged = bind_audio_segments(
+            merged,
+            slice_field=segment_field,
+            audio_field=audio_field,
+        )
+    if materialize_audio:
+        merged = bind_materialize(merged, audio_field)
+    return merged
+
+
+def parse_labels(value: Any) -> tuple[str, ...]:
+    """Parse AudioSet positive label strings into a stable tuple."""
+    if value is None or pd.isna(value):
+        return ()
+    return tuple(part.strip().strip('"') for part in str(value).split(",") if part.strip())
+
+
+def plot_waveform(
+    dataset: Dataset,
+    item_id: Any,
+    *,
+    audio_field: str = AUDIO_FIELD,
+    ax: Any = None,
+) -> Any:
+    """Plot one implicitly sliced audio segment."""
+    plt = _pyplot()
+    row = dataset[item_id]
+    audio = _mono(np.asarray(row[audio_field]))
+    sample_rate = int(row["sample_rate"])
+    if ax is None:
+        _, ax = plt.subplots()
+    time = np.arange(audio.shape[-1]) / sample_rate
+    ax.plot(time, audio)
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("Amplitude")
+    ax.set_title(str(item_id))
+    return ax
+
+
+def plot_spectrogram(
+    dataset: Dataset,
+    item_id: Any,
+    *,
+    audio_field: str = AUDIO_FIELD,
+    n_fft: int = 1024,
+    ax: Any = None,
+) -> Any:
+    """Plot a spectrogram for one implicitly sliced audio segment."""
+    plt = _pyplot()
+    row = dataset[item_id]
+    audio = _mono(np.asarray(row[audio_field]))
+    sample_rate = int(row["sample_rate"])
+    if ax is None:
+        _, ax = plt.subplots()
+    ax.specgram(audio, NFFT=n_fft, Fs=sample_rate, noverlap=n_fft // 2)
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("Frequency (Hz)")
+    ax.set_title(str(item_id))
+    return ax
+
+
+def plot_label_counts(
+    dataset: Dataset,
+    *,
+    labels_field: str = LABELS_FIELD,
+    top_n: int = 20,
+    ax: Any = None,
+) -> Any:
+    """Plot the most frequent AudioSet labels in a dataset."""
+    plt = _pyplot()
+    counts: Counter[str] = Counter()
+    for value in dataset.table[labels_field]:
+        counts.update(parse_labels(value))
+    top = counts.most_common(top_n)
+    labels = [label for label, _ in top]
+    values = [count for _, count in top]
+    if ax is None:
+        _, ax = plt.subplots()
+    ax.barh(labels[::-1], values[::-1])
+    ax.set_xlabel("Clips")
+    ax.set_title("AudioSet label counts")
+    return ax
+
+
+def pad_audio_batch(batch: list[dict[str, Any]]) -> dict[str, Any]:
+    """Collate variable-length audio rows into a padded batch."""
+    torch = _torch()
+    audio_tensors = [
+        torch.from_numpy(np.ascontiguousarray(np.atleast_2d(np.asarray(sample[AUDIO_FIELD]))))
+        for sample in batch
+    ]
+    lengths = torch.tensor([tensor.shape[-1] for tensor in audio_tensors], dtype=torch.long)
+    channels = max(tensor.shape[0] for tensor in audio_tensors)
+    max_length = int(lengths.max().item()) if len(batch) else 0
+    audio = audio_tensors[0].new_zeros((len(batch), channels, max_length))
+    for i, tensor in enumerate(audio_tensors):
+        audio[i, : tensor.shape[0], : tensor.shape[-1]] = tensor
+    return {
+        "item_id": [
+            sample["clip_id"] if "clip_id" in sample else sample["audio_file_id"]
+            for sample in batch
+        ],
+        "audio": audio,
+        "lengths": lengths,
+        "labels": [sample.get(LABELS_FIELD) for sample in batch],
+    }
+
+
+def make_torch_dataloader(
+    dataset: Dataset,
+    *,
+    batch_size: int = 8,
+    shuffle: bool = True,
+    num_workers: int = 0,
+    collate_fn: Any = pad_audio_batch,
+    **kwargs: Any,
+) -> Any:
+    """Create a basic PyTorch DataLoader over patchframe rows."""
+    torch = _torch()
+    return torch.utils.data.DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        num_workers=num_workers,
+        collate_fn=collate_fn,
+        **kwargs,
+    )
+
+
+def _read_audioset_csv(metadata_path: str | Path) -> pd.DataFrame:
+    table = pd.read_csv(
+        metadata_path,
+        comment="#",
+        header=None,
+        names=list(_AUDIOSET_CSV_COLUMNS),
+        skipinitialspace=True,
+    )
+    table["ytid"] = table["ytid"].astype("string")
+    table["start_seconds"] = pd.to_numeric(table["start_seconds"]).astype("Float64")
+    table["end_seconds"] = pd.to_numeric(table["end_seconds"]).astype("Float64")
+    table[LABELS_FIELD] = table[LABELS_FIELD].astype("string")
+    return table
+
+
+def _add_segment_columns(table: pd.DataFrame, *, layout: AudioLayout) -> None:
+    if layout == "segments":
+        table[SEGMENT_START_FIELD] = pd.Series(0.0, index=table.index, dtype="Float64")
+        table[SEGMENT_END_FIELD] = (
+            table["end_seconds"] - table["start_seconds"]
+        ).astype("Float64")
+        return
+    table[SEGMENT_START_FIELD] = table["start_seconds"].astype("Float64")
+    table[SEGMENT_END_FIELD] = table["end_seconds"].astype("Float64")
+
+
+def _audio_dimensions(sample_rate: int) -> Dimensions:
+    return Dimensions((TemporalDimension(name="time", sample_rate=sample_rate),))
+
+
+def _audio_id_dimension() -> CategoricalDimension:
+    return CategoricalDimension(name="audio_id")
+
+
+def _clip_index(table: pd.DataFrame) -> pd.Index:
+    ytid = table["ytid"].astype(str)
+    if ytid.is_unique:
+        return pd.Index(ytid, name="clip_id")
+    start = table["start_seconds"].astype(str)
+    end = table["end_seconds"].astype(str)
+    return pd.Index(
+        [
+            f"{audio_id}:{start_s}:{end_s}:{i}"
+            for i, (audio_id, start_s, end_s) in enumerate(
+                zip(ytid, start, end, strict=True)
+            )
+        ],
+        name="clip_id",
+    )
+
+
+def _unique_audio_ids(labels: Dataset) -> tuple[str, ...]:
+    values = labels.table[SOURCE_AUDIO_ID_FIELD].astype("string")
+    return tuple(str(value) for value in pd.unique(values))
+
+
+def _mono(audio: np.ndarray) -> np.ndarray:
+    values = np.asarray(audio, dtype=np.float32)
+    if values.ndim == 2:
+        return values.mean(axis=0)
+    return values
+
+
+def _soundfile() -> Any:
+    try:
+        import soundfile as sf
+    except ImportError as err:
+        raise ImportError("soundfile is required for WavDataSource.") from err
+    return sf
+
+
+def _pyplot() -> Any:
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError as err:
+        raise ImportError("matplotlib is required for AudioSet visualization helpers.") from err
+    return plt
+
+
+def _torch() -> Any:
+    try:
+        import torch
+    except ImportError as err:
+        raise ImportError("torch is required for AudioSet DataLoader support.") from err
+    return torch

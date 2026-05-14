@@ -15,6 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 import patchframe.dataset.extension  # noqa: F401 — registers finfo on pd.Series
@@ -48,13 +49,16 @@ class Dataset:
     def sources(self):
         return self.state.sources
 
+    def __len__(self) -> int:
+        return len(self.table)
+
     def coupling_engine(self) -> CouplingEngine:
         """Return a cached, validated coupling engine for this dataset."""
         if self._engine is None:
             self._engine = CouplingEngine(schema=self.schema, couplings=self.couplings)
         return self._engine
 
-    def __getitem__(self, key: Any) -> "pd.Series | dict[str, Any]":
+    def __getitem__(self, key: Any) -> pd.Series | dict[str, Any]:
         """Column access or coupling-aware row access.
 
         - ``ds["col"]``     — returns a Series with field info in ``.attrs``.
@@ -69,7 +73,10 @@ class Dataset:
                 pass
             return series
 
-        row = self.table.loc[key]
+        if isinstance(key, (int, np.integer)) and key not in self.table.index:
+            row = self.table.iloc[int(key)]
+        else:
+            row = self.table.loc[key]
         if isinstance(row, pd.DataFrame):
             row = row.iloc[0]
 
@@ -83,7 +90,7 @@ class Dataset:
 
         return result
 
-    def replace_state(self, **kwargs) -> "Dataset":
+    def replace_state(self, **kwargs) -> Dataset:
         """Return a new dataset with parts of the state replaced."""
         return Dataset(state=replace(self.state, **kwargs), source_manager=self.source_manager)
 

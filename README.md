@@ -45,6 +45,31 @@ the DataFrame index is row identity, not only a pandas alignment label. This
 constraint may be relaxed around the number of index-like fields in the future,
 but the primary dataset row identity must remain unique.
 
+## Ergonomics Principle
+
+Patchframe should keep common dataset usage natural while preserving explicit
+structure where it matters. Complexity should be paid once, at the layer that
+actually owns it:
+
+- **Source and creation layer:** highest complexity is allowed here. A
+  `DataSource` and its `make_*` creation operator should own source-specific
+  details such as file layouts, metadata parsing, source descriptors,
+  dimensions, asset IDs, reopen logic, and source-native validation.
+- **Dataset definition layer:** moderate complexity is acceptable, but it
+  should be applied once when defining the dataset. This includes schema
+  fields, dimension bindings, couplings, label normalization, and
+  source-specific convenience binding operators.
+- **Conventional usage layer:** complexity should be very low. Filtering,
+  joins, concat, merge, sampling, loading data, and training integration should
+  feel close to normal dataframe/dataloader workflows. Users should not have
+  to repeatedly manage source internals, dimension-binding boilerplate, or
+  coupling mechanics.
+
+Examples should demonstrate this hierarchy. Domain-specific examples may expose
+helpers such as `make_audioset(...)`, `bind_audio_segments(...)`, or
+`bind_aerial_patches(...)` so that source-specific ceremony is written once and
+ordinary use stays concise.
+
 ## Naming model
 
 Internally, patchframe draws on QFT-inspired terminology:
@@ -334,6 +359,154 @@ Differences from pandas:
 - `MemorySource`
 - `DataFrameSource`
 - `MockSource`
+
+## Current Development Status
+
+Recent implementation work established the current composition and benchmark
+baseline:
+
+- Unique dataset indexes are enforced at `DatasetState` construction.
+- `concat_rows` and `concat_columns` use field composition policies,
+  nullable-column semantics, collision strategies, and conservative coupling
+  rules.
+- `join` now produces an explicit join-plan dataset with `left_index` and
+  `right_index` mapping columns.
+- `merge` consumes left/right datasets plus a join-plan dataset. It validates
+  mapping labels, preserves join-plan metadata columns, gathers rows by index
+  label, applies collision policy, and unions couplings like column
+  composition.
+- `BindDimensions` supports generic dimension bindings and writes
+  `DimensionedSliceArray` columns through `consume` without row-level
+  `DimensionedSlice` materialization.
+- Benchmark scaffolding exists under `benchmarks/` for concat, join, merge,
+  and non-materializing consume paths. Benchmark results are local artifacts
+  and are ignored by git.
+- `DimensionedSliceArray` missing-mask construction uses vectorized
+  `pd.isna`, which keeps million-row `consume(BindDimensions)` runs in the
+  sub-second range for the current benchmark shape.
+- The AudioSet example demonstrates the intended ergonomics and source
+  decoupling: `make_audio_files` parses the WAV source, `make_audioset_labels`
+  parses labels/segments, `merge_audio_labels` composes them through
+  `join`/`merge`, and `bind_audio_segments` applies dataset-definition
+  couplings once. Conventional usage gets implicitly sliced audio accessors
+  through row access. It also includes waveform/spectrogram/label-count
+  visualizations and a basic optional PyTorch `DataLoader`.
+
+## Performance Direction
+
+Patchframe should keep operator APIs independent from the table execution
+engine where practical. The default in-memory table remains pandas because it
+supports nullable columns, object columns, extension arrays, and the current
+schema validation model directly.
+
+For table-heavy relational operators, a future `engine=...` parameter may be
+added after benchmark validation. Candidate operators include:
+
+- `concat_rows`
+- `concat_columns`
+- `join` for field equality joins
+- `merge` for join-plan materialization
+
+Possible engine values:
+
+- `engine="pandas"`: default behavior, preserves current semantics.
+- `engine="polars"`: optional acceleration path for supported schemas.
+- `engine="auto"`: future dispatch once benchmark data and compatibility rules
+  are mature enough.
+
+The first Polars integration should be benchmark-only. It should measure:
+
+- pandas end-to-end runtime
+- pandas-to-Polars conversion time
+- Polars operation runtime
+- Polars-to-pandas conversion time
+- result equality against the pandas implementation
+
+Polars must treat the pandas index explicitly as a reserved identity column,
+then restore it and validate uniqueness when converting back. This matters
+because patchframe uses the DataFrame index as dataset row identity, while
+Polars has no pandas-style index.
+
+Known constraints before promoting `engine="polars"` into core operators:
+
+- `DataAccessor` columns are Python object columns and may reduce or eliminate
+  Polars benefits.
+- `DimensionedSliceArray` is a pandas extension array and should not be routed
+  through Polars unless it can be preserved or rebuilt without scalar
+  object materialization.
+- `consume(BindDimensions)` is primarily a NumPy/extension-array construction
+  path and is not expected to benefit from a Polars backend.
+- Any alternate engine must preserve schema policies, nullable semantics,
+  collision behavior, coupling field references, and the unique-index
+  invariant.
+
+## Future Extensions And TODOs
+
+### Dask Execution Extension
+
+Dask support should be explicit and extension-owned. The preferred user-facing
+shape is to return a Dask collection or delayed graph and let the user call
+`.compute()` directly:
+
+```python
+lazy = patchframe_dask.map_field(ds, input_field="audio", output_field="snr", fn=compute_snr)
+result = lazy.compute()
+```
+
+Core operators should not hide Dask execution behind normal in-memory operator
+calls. Candidate extension workloads:
+
+- large-scale materialization of `DataAccessor` columns
+- partitioned feature computation, such as SNR over audio segments
+- local reductions over sliced arrays, such as argmax over model likelihood maps
+- batch embedding or quality-metric computation
+
+Design constraints to preserve now:
+
+- `DataAccessor`, `DimensionedSlice`, coupling declarations, and operation
+  specs should stay small and pickle-friendly.
+- `SourceDescriptor` must be sufficient for a worker process to reopen a
+  `DataSource`; workers should not depend on a process-shared `SourceManager`.
+- Live file handles, caches, locks, GPU handles, and runtime managers should
+  stay out of serialized dataset state and task graphs.
+- Dask work should be partitioned by row blocks or source-native chunks, not
+  one task per row.
+- Outputs should retain dataset index labels so computed results can be joined
+  or assigned back deterministically.
+
+### Access Path And Async IO
+
+Future row access may need async support for IO-heavy sources. Keep this
+separate from table composition operators:
+
+- `dataset[row_id]` can remain synchronous for the core API.
+- An extension or alternate access API may expose async/concurrent row reads.
+- Async should target IO-bound materialization and inspection, not concat,
+  join, merge, or `BindDimensions` metadata construction.
+
+### Dimension And Join Extensions
+
+Dimension-aware joins remain a major future design area:
+
+- generic dimension-scope join dispatch
+- interval overlap joins
+- nearest temporal joins
+- geometry/spatial joins in an optional extension package
+- scored or ranked retrieval joins
+
+The built-in package should stay non-geometric. Geometry dependencies belong
+in extensions.
+
+### Benchmark TODOs
+
+- Add benchmark-only Polars candidate paths before adding `engine="polars"` to
+  any core operator.
+- Add larger manual benchmark presets for `1_000_000+` rows and many nullable
+  columns.
+- Add access-path benchmarks for row access, coupling application, and future
+  async/materialization workloads.
+- Keep CI tests small and correctness-oriented; do not enforce wall-clock
+  thresholds until stable baseline data exists.
 
 ## Development setup
 

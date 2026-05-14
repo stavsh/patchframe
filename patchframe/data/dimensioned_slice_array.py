@@ -14,16 +14,11 @@ from patchframe.data.dimensioned_slice import DimensionedSlice
 from patchframe.data.dimensions import Dimension
 
 
-def _is_missing_scalar(value: Any) -> bool:
-    if value is None or value is pd.NA:
-        return True
-    if isinstance(value, float | np.floating):
-        return bool(np.isnan(value))
-    return False
-
-
 def _missing_mask(values: np.ndarray) -> np.ndarray:
-    return np.array([_is_missing_scalar(value) for value in values], dtype=bool)
+    mask = np.asarray(pd.isna(values), dtype=bool)
+    if mask.shape == ():
+        return np.full(values.shape, bool(mask.item()), dtype=bool)
+    return mask
 
 
 @register_extension_dtype

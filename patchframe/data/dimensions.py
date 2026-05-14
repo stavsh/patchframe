@@ -15,6 +15,7 @@ DimensionIndex objects suitable for numpy array indexing.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -103,6 +104,43 @@ class TemporalDimension(Dimension):
             name=self.name,
             value=slice(int(value.start * sr), int(value.stop * sr)),
         )
+
+
+@dataclass(frozen=True, slots=True)
+class CategoricalDimension(Dimension):
+    """A dimension whose natural unit is a category label.
+
+    ``categories`` is optional. When provided, ``to_index`` maps category labels
+    to integer positions. When omitted, labels pass through unchanged so sources
+    can interpret categories directly.
+    """
+
+    categories: tuple[Any, ...] = ()
+
+    def spec(self, *values: Any) -> DimensionedSlice:
+        if not values:
+            raise ValueError("CategoricalDimension expects at least one selector value.")
+        value = values[0] if len(values) == 1 else tuple(values)
+        return DimensionedSlice(dims={self.name: value})
+
+    def to_index(self, value: Any) -> DimensionIndex:
+        if not self.categories:
+            return DimensionIndex(name=self.name, value=value)
+        if _is_category_sequence(value):
+            return DimensionIndex(name=self.name, value=[self._position(v) for v in value])
+        return DimensionIndex(name=self.name, value=self._position(value))
+
+    def _position(self, value: Any) -> int:
+        try:
+            return self.categories.index(value)
+        except ValueError as err:
+            raise ValueError(
+                f"Category {value!r} is not present in dimension {self.name!r}."
+            ) from err
+
+
+def _is_category_sequence(value: Any) -> bool:
+    return isinstance(value, Sequence) and not isinstance(value, str | bytes)
 
 
 @dataclass(frozen=True, slots=True)
