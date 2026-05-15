@@ -6,11 +6,13 @@ from benchmarks.factories import dimension_bindings, make_index_pair, make_multi
 from patchframe.data.accessor import DataAccessor
 from patchframe.data.dimensioned_slice import DimensionedSlice
 from patchframe.data.dimensioned_slice_array import DimensionedSliceArray
+from patchframe.data.windows import AxisWindow
 from patchframe.dataset.field_composition import ColumnCollisionStrategy
 from patchframe.ops.builtin.bind_dimensions import bind_dimensions
 from patchframe.ops.builtin.bind_slice import bind_slice
 from patchframe.ops.builtin.concat import concat_columns, concat_rows
 from patchframe.ops.builtin.consume import consume
+from patchframe.ops.builtin.dimensional_plan import make_dimensional_plan
 from patchframe.ops.builtin.join import join
 from patchframe.ops.builtin.merge import merge
 
@@ -55,6 +57,25 @@ def test_consume_bind_dimensions_keeps_dimensioned_slice_array_columnar():
     scalar = result.table["slice"].iloc[0]
     assert isinstance(scalar, DimensionedSlice)
     assert set(scalar.dims) == {"time", "x", "y"}
+
+
+def test_make_dimensional_plan_benchmark_path_expands_dimension_bindings():
+    ds = make_multidim_dataset(
+        1_000,
+        value_cols=2,
+        string_cols=0,
+        include_data=False,
+    )
+
+    plan = make_dimensional_plan(
+        ds,
+        bindings={"x": dimension_bindings()["x"], "y": dimension_bindings()["y"]},
+        windows={"x": AxisWindow(32, 32), "y": AxisWindow(32, 32)},
+    )
+
+    assert plan.table.shape[0] == 4_000
+    assert plan.table["source_index"].iloc[0] == 0
+    assert isinstance(plan.table["slice"].array, DimensionedSliceArray)
 
 
 def test_consume_chained_bind_dimensions_keeps_dimensioned_slice_array_columnar():

@@ -30,6 +30,7 @@ from benchmarks.factories import (
     make_index_pair,
     make_multidim_dataset,
 )
+from patchframe.data.windows import AxisWindow
 from patchframe.dataset.dataset import Dataset
 from patchframe.dataset.field_composition import ColumnCollisionStrategy
 from patchframe.dataset.state import DatasetState
@@ -37,6 +38,7 @@ from patchframe.ops.builtin.bind_dimensions import bind_dimensions
 from patchframe.ops.builtin.bind_slice import bind_slice
 from patchframe.ops.builtin.concat import concat_columns, concat_rows
 from patchframe.ops.builtin.consume import consume
+from patchframe.ops.builtin.dimensional_plan import make_dimensional_plan
 from patchframe.ops.builtin.join import FieldEqualityJoin, IndexJoin, join
 from patchframe.ops.builtin.merge import merge
 
@@ -51,6 +53,7 @@ DEFAULT_OPS = (
     "merge_inner",
     "merge_outer",
     "merge_collision_update_missing",
+    "make_dimensional_plan",
     "consume_bind_dimensions",
     "consume_chained_dimensions",
     "consume_bind_slice",
@@ -200,6 +203,23 @@ def _make_case(name: str, args: argparse.Namespace) -> OperationCase:
             {"collision": collision},
         )
 
+    if name == "make_dimensional_plan":
+        ds = _dimensional_plan_dataset(rows, args)
+        return _call_case(
+            name,
+            lambda: make_dimensional_plan(
+                ds,
+                bindings={
+                    "x": dimension_bindings()["x"],
+                    "y": dimension_bindings()["y"],
+                },
+                windows={
+                    "x": AxisWindow(size=32, stride=32),
+                    "y": AxisWindow(size=32, stride=32),
+                },
+            ),
+        )
+
     if name == "consume_bind_dimensions":
         ds = _consume_dataset(rows, args)
         ds = bind_dimensions(ds, slice_field="slice", bindings=dimension_bindings())
@@ -243,6 +263,25 @@ def _consume_dataset(rows: int, args: argparse.Namespace) -> Dataset:
         include_data=True,
         null_every=args.null_every,
     )
+
+
+def _dimensional_plan_dataset(rows: int, args: argparse.Namespace) -> Dataset:
+    return make_multidim_dataset(
+        rows,
+        value_cols=args.value_cols,
+        string_cols=args.string_cols,
+        group_mod=args.group_mod,
+        include_dimensions=True,
+        include_data=False,
+        null_every=0,
+    )
+
+
+def _call_case(
+    name: str,
+    run: OperationRunner,
+) -> OperationCase:
+    return OperationCase(name=name, run=run)
 
 
 def _composition_case(

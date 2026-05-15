@@ -42,6 +42,11 @@ dev = [
   "twine>=5.0.0",
 ]
 arrow = ["pyarrow>=14.0"]
+examples = [
+  "matplotlib>=3.8",
+  "soundfile>=0.12",
+  "torch>=2.1",
+]
 
 [project.urls]
 Homepage = "https://github.com/YOUR_ORG/patchframe"

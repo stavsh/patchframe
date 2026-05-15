@@ -68,5 +68,6 @@ class consume(DatasetOperator):
                 source_descriptors=state.source_descriptors,
                 assets=state.assets,
                 views=state.views,
+                metadata=state.metadata,
             )
         return table

@@ -25,7 +25,7 @@ from examples.audioset import (
     plot_spectrogram,
     plot_waveform,
 )
-from patchframe.ops.builtin.where import where
+import patchframe as pf
 
 
 def main(
@@ -47,7 +47,7 @@ def main(
     print(ds.table[["start_seconds", "end_seconds", "labels"]].head())
 
     if label is not None:
-        ds = where(ds, ds.table["labels"].str.contains(label, regex=False))
+        ds = pf.where(ds, ds.table["labels"].str.contains(label, regex=False))
         print(f"\nAfter label filter ({label!r}): {len(ds.table)} clips")
 
     if ds.table.empty:

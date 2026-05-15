@@ -41,6 +41,74 @@ The lazy data layer is built from:
 - **SourceDescriptor** — durable reopen recipe for a source
 - **SourceManager** — process-local manager of live source handles
 
+### User-facing data sources
+
+`DataSource` is the low-level runtime contract, but it should not be the only
+extension point users are expected to implement directly. Source authors should
+not have to repeatedly hand-write descriptor roundtrips, dimension-name
+validation, or generic slice application.
+
+Source capability flags make the expected behavior explicit:
+
+- `runtime`: usable through a live `SourceManager` in the current process.
+- `reopenable`: `describe()` returns a `SourceDescriptor` complete enough for
+  `type(source).open(descriptor)` to reconstruct an equivalent source.
+- `portable`: the descriptor is serializable enough for worker/process transfer.
+
+Plain `DataSource` defaults to runtime-only. `ArrayDataSource` defaults to all
+three capabilities because it generates `describe()` and `open()` from declared
+configuration fields. Sources that cannot provide persistent or portable
+configuration can still participate in patchframe as runtime sources, but they
+should fail clearly if used in contexts that require reopening or worker
+transfer.
+
+The intended direction is a higher-level array/source base class for common
+external data sources. That base should own:
+
+- `describe()` and `open()` roundtrip boilerplate from a serializable source
+  configuration
+- stable `source_id` construction from source identity/configuration
+- `SourceDescriptor.open_config` completeness checks
+- dimension-name validation in `slice_accessor`
+- generic `DimensionedSlice` resolution and NumPy-style slice application
+
+User implementations should usually provide only source-specific IO:
+
+- `read_full(item_id, accessor)` for simple sources
+- `read_partial(item_id, resolved_slice, accessor)` for sources that can read a
+  slice efficiently without loading the full item
+
+Partial-read support should be explicit, for example through a
+`supports_partial_read` flag, rather than discovered by exception handling on
+the materialization path. The default `read(...)` behavior can load the full
+item and apply the resolved slice when partial reads are not supported.
+
+A testing utility should also exist for source authors, tentatively
+`assert_source_contract(...)` or `validate_source(...)`. It should verify that:
+
+- `source.describe()` returns a valid `SourceDescriptor`
+- `type(source).open(source.describe())` can reopen an equivalent source when
+  `reopenable=True`
+- `open_config` is complete and serializable enough for worker processes when
+  `portable=True`
+- source identity and dimensions survive the descriptor roundtrip
+- unknown slice dimensions are rejected
+- full and sliced materialization work
+- when feasible, partial-read output matches full-read-plus-slice output
+
+This preserves `DataSource` as an escape hatch for unusual backends while giving
+normal examples such as WAV, raster, Zarr, or image-folder sources a safer and
+smaller implementation surface.
+
+### Dimensional slicing note
+
+Patchframe currently has several objects related to dimensional slicing:
+`Dimension`, `Dimensions`, `DimensionIndex`, `DimensionedSlice`, and the
+dimensioned-slice extension array. `ResolvedSlice` is currently a thin helper
+that keeps dimension names available through slice resolution and source
+materialization. Treat it as provisional: the dimensional slicing model may
+need consolidation before that helper becomes a long-term public concept.
+
 ## Dataset identity invariant
 
 The table index is a hard dataset invariant: it must be unique. In patchframe,
@@ -606,6 +674,103 @@ Differences from pandas:
   unless an explicit collision policy resolves the collision.
 - Pandas does not validate typed schema semantics or coupling safety.
 
+## Plan datasets
+
+Some dataset operations have two separable phases:
+
+1. decide what should happen
+2. materialize the result
+
+Patchframe should make the first phase explicit when it is useful to inspect,
+filter, sample, cache, concatenate, or replace before materialization. The
+intermediate artifact is a **plan dataset**: an ordinary `Dataset` whose rows
+describe a later operation.
+
+The implemented join/merge split is the first example:
+
+```python
+plan = join(left, right)
+merged = merge(left, right, plan)
+```
+
+The plan is not a hidden dataframe inside `merge`. It is a dataset with its own
+unique row index and mapping columns. Users can inspect or modify it before
+applying it.
+
+The naming convention should be:
+
+- `make_*_plan` or a specific planner name creates a plan dataset.
+- `*_by_plan` applies a plan dataset.
+- Plan datasets remain normal datasets unless a future execution layer adds an
+  explicit lazy/chunked plan object.
+
+### Dimensional expansion plans
+
+The next planned use of this idea is dimensional expansion: a general form of
+tiling, patch extraction, clipping, video windowing, DAS windowing, or other
+N-dimensional row expansion.
+
+A dimensional expansion plan describes output rows by mapping each row back to
+a source dataset row plus a slice. The current core shape is:
+
+- `source_index`: index label of the source row
+- `slice`: a `DimensionedSliceField` backed by `DimensionedSliceArray`
+- optional plan metadata such as sampling reason, score, label id, overlap, or
+  strategy
+
+`make_dimensional_plan` is the first implementation. It accepts extents from
+either a single `DimensionedSliceField` or from explicit `DimensionField`
+bindings in the same style as `bind_dimensions`. Single-column inputs may
+contain null rows, which are skipped. Multi-field bindings reject nulls because
+partial bounds across multiple columns are ambiguous.
+
+The default core planner is deliberately narrow: axis-independent regular
+windows over any number of sliceable dimensions. `AxisWindow(size=..., stride=...,
+offset=..., include_partial=...)` only answers: "given an extent on one
+dimension, which start/stop intervals should be emitted?" The performance
+critical expansion lives on `DimensionedSliceArray.explode_windows(...)`, so
+the operator wrapper normalizes inputs into a slice array and keeps the window
+grid construction NumPy-based. `DataField`-backed planning is intentionally not
+accepted yet because source extent lookup is not columnar until a future
+`DataAccessorArray` or batch extent API exists. Label-driven, geometry-driven,
+source-native, random, adaptive, or multiscale planning can produce the same
+plan dataset through extension-owned code.
+
+`DatasetState.metadata` can carry lightweight, non-executable dataset metadata.
+Dimensional plans mark themselves under `patchframe.plan`; for now this is used
+to warn when `make_dimensional_plan` is called on an existing plan dataset.
+Planning over a plan currently means the new `source_index` values point to the
+input plan rows, not to the original source dataset. Dedicated plan-refinement
+semantics should be designed before relying on repeated planning.
+
+Applying such a plan should be a generic operation, tentatively named
+`explode_by_plan`, not an aerial- or raster-specific `retile`. It should gather
+source rows by unique index label, attach or compute a slice field, and bind
+that slice to one or more `DataField` columns. It should not materialize arrays
+unless a materialization coupling is explicitly present or consumed.
+
+This is important for sparse-label and large-extent datasets. Patchframe should
+not require the user to generate every possible tile and then spatially join
+labels just to discover the small subset of useful patches. Dense tiling is one
+valid plan creation strategy, but label-driven, sampled, indexed, or extension
+generated plans should feed the same apply operator.
+
+### Lazy and batched plans
+
+The first implementation should keep plan datasets concrete and in memory. A
+generator-like or lazy plan object is a future execution-layer decision, not a
+`DatasetState` feature yet.
+
+Putting unmaterialized plans inside `DatasetState` would affect core
+invariants such as `len(dataset)`, `dataset.table`, schema validation, coupling
+execution, source propagation, row access, and composition. If lazy planning is
+needed later, it should likely be explicit, similar to a groupby/planner object
+that can yield normal plan datasets or plan chunks.
+
+For now, the batch-friendly constraint is simple: plan application should accept
+any valid plan dataset. Future batching can feed smaller plan datasets into the
+same `*_by_plan` operator without changing the meaning of the operation.
+
 ## First concrete operator
 
 - `make_from_dataframe` — turns an existing dataframe and explicit schema into a dataset
@@ -635,11 +800,15 @@ baseline:
   `DimensionedSliceArray` columns through `consume` without row-level
   `DimensionedSlice` materialization.
 - Benchmark scaffolding exists under `benchmarks/` for concat, join, merge,
-  and non-materializing consume paths. Benchmark results are local artifacts
-  and are ignored by git.
+  dimensional plan creation, and non-materializing consume paths. Benchmark
+  results are local artifacts and are ignored by git.
 - `DimensionedSliceArray` missing-mask construction uses vectorized
   `pd.isna`, which keeps million-row `consume(BindDimensions)` runs in the
   sub-second range for the current benchmark shape.
+- `make_dimensional_plan` produces concrete dimensional expansion plans with
+  `source_index` and columnar `slice` fields. It can plan from
+  `DimensionedSliceField` extents or explicit `DimensionField` bindings, with
+  window expansion handled by `DimensionedSliceArray`.
 - The AudioSet example demonstrates the intended ergonomics and source
   decoupling: `make_audio_files` parses the WAV source, `make_audioset_labels`
   parses labels/segments, `merge_audio_labels` composes them through
@@ -771,4 +940,10 @@ pip install -e ".[dev]"
 pytest
 ruff check .
 ruff format .
+```
+
+To run examples that need visualization, WAV IO, or PyTorch:
+
+```bash
+pip install -e ".[examples]"
 ```

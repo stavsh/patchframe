@@ -25,6 +25,9 @@ class DataSource:
     """Base runtime data-source interface."""
 
     source_type: str = "base"
+    runtime: bool = True
+    reopenable: bool = False
+    portable: bool = False
     thread_safe: bool = False
     fork_safe: bool = False
     dimensions: Dimensions  # set from SourceDescriptor.capabilities during open()

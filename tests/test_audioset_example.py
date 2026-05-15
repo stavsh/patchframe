@@ -12,6 +12,7 @@ from examples.audioset import (
     SEGMENT_FIELD,
     SEGMENT_START_FIELD,
     SOURCE_AUDIO_ID_FIELD,
+    WavDataSource,
     bind_audio_segments,
     make_audio_files,
     make_audioset,
@@ -24,6 +25,7 @@ from patchframe.data.dimensions import CategoricalDimension
 from patchframe.data.manager import reset_default_manager
 from patchframe.dataset.fields import DimensionField
 from patchframe.ops.builtin.consume import consume
+from patchframe.testing import assert_source_contract
 
 
 @pytest.fixture(autouse=True)
@@ -32,23 +34,23 @@ def fresh_manager():
 
 
 @pytest.fixture(autouse=True)
-def fake_wav_materialize(monkeypatch):
-    def _materialize(self, accessor):
+def fake_wav_reads(monkeypatch):
+    def _read_full(self, item_id, accessor):
+        return np.zeros(self.sample_rate * 20, dtype=np.float32)
+
+    def _read_partial(self, item_id, resolved_slice, accessor):
+        time_slice = resolved_slice.get("time")
         duration = 8
-        if accessor.dimensioned_slice is not None:
-            time_slice = accessor.dimensioned_slice.dims.get("time")
-            if (
-                isinstance(time_slice, slice)
-                and time_slice.stop is not None
-                and time_slice.start is not None
-            ):
-                duration = max(
-                    int(round((time_slice.stop - time_slice.start) * self.sample_rate)),
-                    1,
-                )
+        if (
+            isinstance(time_slice, slice)
+            and time_slice.stop is not None
+            and time_slice.start is not None
+        ):
+            duration = max(time_slice.stop - time_slice.start, 1)
         return np.zeros(duration, dtype=np.float32)
 
-    monkeypatch.setattr("examples.audioset.WavDataSource.materialize", _materialize)
+    monkeypatch.setattr("examples.audioset.WavDataSource.read_full", _read_full)
+    monkeypatch.setattr("examples.audioset.WavDataSource.read_partial", _read_partial)
 
 
 def _metadata_csv(tmp_path):
@@ -106,6 +108,18 @@ def test_audio_files_and_labels_are_separate_sources_before_merge(tmp_path):
     assert row[SEGMENT_FIELD].dims["time"] == slice(0.0, 10.0)
     assert merged.table.index.name == "clip_id"
     assert merged[0]["clip_id"] == "clip_a"
+
+
+def test_wav_data_source_satisfies_array_source_contract(tmp_path):
+    source = WavDataSource(base_dir=str(tmp_path), sample_rate=16_000)
+    dim_slice = source.dimensions.dims[0].spec(0.0, 1.0)
+
+    assert_source_contract(
+        source,
+        item_id="clip_a",
+        dim_slice=dim_slice,
+        compare_partial=True,
+    )
 
 
 def test_full_audio_layout_uses_csv_times_as_slice_coordinates(tmp_path):

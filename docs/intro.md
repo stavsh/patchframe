@@ -193,8 +193,8 @@ The AudioSet example demonstrates the intended ergonomics. Source-specific
 details live in `examples/audioset.py`; normal usage remains concise.
 
 ```python
+import patchframe as pf
 from examples.audioset import make_audioset, make_torch_dataloader, plot_spectrogram
-from patchframe.ops.builtin.where import where
 
 ds = make_audioset(
     "balanced_train_segments.csv",
@@ -203,7 +203,7 @@ ds = make_audioset(
 )
 
 # Keep dataframe-like filtering.
-speech = where(ds, ds.table["labels"].str.contains("/m/09x0r", regex=False))
+speech = pf.where(ds, ds.table["labels"].str.contains("/m/09x0r", regex=False))
 
 # Row access materializes the implicitly sliced audio segment.
 item_id = speech.table.index[0]

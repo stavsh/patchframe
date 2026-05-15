@@ -25,6 +25,7 @@ from patchframe.data.manager import SourceManager, get_default_manager
 from patchframe.data.source import DataSource
 from patchframe.dataset.couplings import CouplingSet
 from patchframe.dataset.dataset import Dataset
+from patchframe.dataset.fields import IndexField
 from patchframe.dataset.provenance import DatasetSourceInfo
 from patchframe.dataset.schema import Schema
 from patchframe.dataset.state import DatasetState
@@ -256,6 +257,78 @@ class CreationOperator(Operator):
 
     @abstractmethod
     def build(self, *args: Any, **kwargs: Any) -> DatasetState: ...
+
+
+class PlanOperator(Operator):
+    """Creates an explicit plan dataset.
+
+    A plan dataset is a normal Dataset whose rows describe a later operation.
+    Subclasses own their call signature and use ``build_plan_dataset`` to
+    assemble and validate the concrete plan state.
+    """
+
+    plan_index_name: ClassVar[str] = "plan_id"
+    required_plan_fields: ClassVar[tuple[str, ...]] = ()
+
+    def build_plan_dataset(
+        self,
+        *,
+        schema: Schema,
+        table: pd.DataFrame,
+        sources: tuple[DatasetSourceInfo, ...] = (),
+        source_manager: SourceManager | None = None,
+        metadata: dict[str, Any] | None = None,
+        plan_index_name: str | None = None,
+        required_plan_fields: tuple[str, ...] | None = None,
+    ) -> Dataset:
+        index_name = plan_index_name or self.plan_index_name
+        required_fields = (
+            self.required_plan_fields
+            if required_plan_fields is None
+            else required_plan_fields
+        )
+        self.validate_plan_schema(
+            schema,
+            table,
+            plan_index_name=index_name,
+            required_plan_fields=required_fields,
+        )
+        return Dataset(
+            state=DatasetState(
+                schema=schema,
+                table=table,
+                sources=sources,
+                metadata=metadata or {},
+            ),
+            source_manager=source_manager,
+        )
+
+    def validate_plan_schema(
+        self,
+        schema: Schema,
+        table: pd.DataFrame,
+        *,
+        plan_index_name: str | None = None,
+        required_plan_fields: tuple[str, ...] | None = None,
+    ) -> None:
+        index_name = plan_index_name or self.plan_index_name
+        required_fields = (
+            self.required_plan_fields
+            if required_plan_fields is None
+            else required_plan_fields
+        )
+        if not schema.has(index_name) or not isinstance(schema.get(index_name), IndexField):
+            raise ValueError(
+                f"{self.name}: plan schema must include IndexField({index_name!r})."
+            )
+        if table.index.name != index_name:
+            raise ValueError(f"{self.name}: plan table index must be named {index_name!r}.")
+
+        missing_schema = [name for name in required_fields if not schema.has(name)]
+        missing_table = [name for name in required_fields if name not in table.columns]
+        missing = tuple(dict.fromkeys((*missing_schema, *missing_table)))
+        if missing:
+            raise ValueError(f"{self.name}: plan is missing required fields: {list(missing)}")
 
 
 class CompositionOperator(Operator):

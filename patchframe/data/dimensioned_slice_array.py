@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any, ClassVar
 
 import numpy as np
@@ -11,7 +11,8 @@ from pandas.api.extensions import ExtensionArray, ExtensionDtype, register_exten
 from pandas.api.extensions import take as take_array
 
 from patchframe.data.dimensioned_slice import DimensionedSlice
-from patchframe.data.dimensions import Dimension
+from patchframe.data.dimensions import Dimension, IndexDimension
+from patchframe.data.windows import AxisWindow
 
 
 def _missing_mask(values: np.ndarray) -> np.ndarray:
@@ -247,8 +248,108 @@ class DimensionedSliceArray(ExtensionArray):
             copy=True,
         )
 
+    @property
+    def dimensions(self) -> tuple[Dimension, ...]:
+        """Return dimensions represented by vectorized selector columns."""
+
+        return self._dimensions
+
+    def dimension_names(self) -> tuple[str, ...]:
+        """Return dimension names represented by vectorized selector columns."""
+
+        return tuple(dim.name for dim in self._dimensions)
+
+    def explode_windows(
+        self,
+        windows: Mapping[str, AxisWindow],
+    ) -> tuple[np.ndarray, DimensionedSliceArray]:
+        """Expand each bounded slice row into regular n-dimensional windows.
+
+        Returns
+        -------
+        parent_positions:
+            Integer positions in this array, repeated once for each generated
+            window.
+        slices:
+            A columnar ``DimensionedSliceArray`` of generated tile slices.
+        """
+
+        if not windows:
+            raise ValueError("explode_windows requires at least one window.")
+
+        names = tuple(windows)
+        extents = {
+            name: self._extent_columns(name)
+            for name in names
+        }
+        window_dimensions = tuple(self._dimension_for_name(name) for name in names)
+
+        parent_positions = np.flatnonzero(~self._mask)
+        selector_by_name: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+        for name in names:
+            starts_all, stops_all = extents[name]
+            starts = starts_all[parent_positions]
+            stops = stops_all[parent_positions]
+            counts = windows[name].counts(starts, stops)
+
+            selector_by_name = {
+                existing_name: tuple(np.repeat(col, counts) for col in columns)
+                for existing_name, columns in selector_by_name.items()
+            }
+            next_parent_positions = np.repeat(parent_positions, counts)
+            selector_by_name[name] = windows[name].intervals(starts, stops, counts)
+            parent_positions = next_parent_positions
+
+        base = self.take(parent_positions) if len(parent_positions) else self.take([])
+        slices = type(self).from_columns(
+            dimensions=window_dimensions,
+            selector_columns=tuple(selector_by_name[name] for name in names),
+            base=base,
+        )
+        return parent_positions, slices
+
     def _signature(self) -> tuple[tuple[Dimension, ...], tuple[int, ...]]:
         return self._dimensions, tuple(len(columns) for columns in self._selector_columns)
+
+    def _dimension_for_name(self, name: str) -> Dimension:
+        for dimension in reversed(self._dimensions):
+            if dimension.name == name:
+                return dimension
+        return IndexDimension(name=name)
+
+    def _extent_columns(self, name: str) -> tuple[np.ndarray, np.ndarray]:
+        dimension_columns = tuple(zip(
+            self._dimensions,
+            self._selector_columns,
+            strict=True,
+        ))
+        for dimension, columns in reversed(dimension_columns):
+            if dimension.name != name:
+                continue
+            if len(columns) != 2:
+                raise ValueError(
+                    f"Dimension {name!r} is not interval-like and cannot be windowed."
+                )
+            return columns[0], columns[1]
+
+        starts = np.full(len(self), None, dtype=object)
+        stops = np.full(len(self), None, dtype=object)
+        for pos in np.flatnonzero(~self._mask):
+            scalar = self._scalar_at(int(pos))
+            if not isinstance(scalar, DimensionedSlice):
+                raise TypeError("explode_windows requires DimensionedSlice rows.")
+            if name not in scalar.dims:
+                raise ValueError(
+                    f"DimensionedSlice row {pos} does not contain dimension {name!r}."
+                )
+            value = scalar.dims[name]
+            if not isinstance(value, slice) or value.stop is None:
+                raise ValueError(
+                    f"Dimension {name!r} must be represented by a bounded slice."
+                )
+            starts[pos] = 0 if value.start is None else value.start
+            stops[pos] = value.stop
+        return starts, stops
 
     def _infer_length(self, mask: Sequence[bool] | None) -> int:
         lengths = [len(col) for columns in self._selector_columns for col in columns]
