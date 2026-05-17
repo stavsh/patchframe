@@ -26,6 +26,11 @@ from patchframe.data.source import DataSource
 from patchframe.dataset.couplings import CouplingSet
 from patchframe.dataset.dataset import Dataset
 from patchframe.dataset.fields import IndexField
+from patchframe.dataset.identity import (
+    mint_primary_index_identity,
+    primary_index_identity,
+    with_primary_index_identity,
+)
 from patchframe.dataset.provenance import DatasetSourceInfo
 from patchframe.dataset.schema import Schema
 from patchframe.dataset.state import DatasetState
@@ -154,12 +159,14 @@ class DatasetOperator(Operator):
 
     def _apply(self, dataset: Dataset, *args: Any, **kwargs: Any) -> Dataset:
         t, s = self.transitions, dataset.state
+        schema = (
+            self.apply_schema(s, *args, **kwargs)
+            if t.schema.mode != "preserve"
+            else s.schema
+        )
+        schema = self.apply_index_identity(s, schema, *args, **kwargs)
         result = dataset.replace_state(
-            schema=(
-                self.apply_schema(s, *args, **kwargs)
-                if t.schema.mode != "preserve"
-                else s.schema
-            ),
+            schema=schema,
             table=(
                 self.apply_table(s, *args, **kwargs)
                 if t.table.mode != "preserve"
@@ -178,6 +185,29 @@ class DatasetOperator(Operator):
         )
         self._validate_output(result)
         return result
+
+    def apply_index_identity(
+        self,
+        state: DatasetState,
+        schema: Schema,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Schema:
+        """Apply the declared primary index identity transition to ``schema``."""
+
+        mode = self.transitions.index_identity.mode
+        if mode == "preserve":
+            try:
+                return with_primary_index_identity(schema, primary_index_identity(state))
+            except ValueError:
+                return schema
+        if mode == "mint":
+            return mint_primary_index_identity(schema)
+        if mode == "derive":
+            return schema
+        raise ValueError(
+            f"{self.name}: unsupported index identity transition mode {mode!r}."
+        )
 
     def _validate_output(self, dataset: Dataset) -> None:
         """Validate the output dataset. Override to customize or suppress."""
@@ -267,6 +297,9 @@ class PlanOperator(Operator):
     assemble and validate the concrete plan state.
     """
 
+    transitions: ClassVar[TransitionPlan] = TransitionPlan(
+        index_identity=AspectTransition("mint"),
+    )
     plan_index_name: ClassVar[str] = "plan_id"
     required_plan_fields: ClassVar[tuple[str, ...]] = ()
 
@@ -281,6 +314,8 @@ class PlanOperator(Operator):
         plan_index_name: str | None = None,
         required_plan_fields: tuple[str, ...] | None = None,
     ) -> Dataset:
+        if self.transitions.index_identity.mode == "mint":
+            schema = mint_primary_index_identity(schema)
         index_name = plan_index_name or self.plan_index_name
         required_fields = (
             self.required_plan_fields
@@ -345,6 +380,7 @@ class CompositionOperator(Operator):
         table     = AspectTransition("derive"),
         couplings = AspectTransition("derive"),
         sources   = AspectTransition("union"),
+        index_identity=AspectTransition("derive"),
     )
 
     def __call__(self, *datasets: Dataset, **kwargs: Any) -> Dataset:

@@ -14,6 +14,7 @@ from patchframe.dataset.fields import (
     IndexField,
     ValueField,
 )
+from patchframe.dataset.identity import new_index_identity
 
 CompositionRole = Literal["row_stack", "column_add", "key_coalesce", "collision"]
 CollisionMode = Literal["error", "keep", "update_missing", "coalesce", "rename"]
@@ -161,6 +162,24 @@ class DimensionFieldCompositionPolicy(FieldCompositionPolicy):
 class IndexFieldCompositionPolicy(FieldCompositionPolicy):
     """Index fields remain a special identity field in column composition."""
 
+    def compose_rows(
+        self,
+        fields: tuple[Field, ...],
+        context: CompositionContext,
+    ) -> Field:
+        self.check_row_compatible(_first_field(fields), fields[1:], context)
+        identities = {
+            field.identity
+            for field in fields
+            if isinstance(field, IndexField) and field.identity is not None
+        }
+        result = _first_field(fields)
+        if len(identities) > 1:
+            return replace(result, identity=new_index_identity())
+        if len(identities) == 1:
+            return replace(result, identity=next(iter(identities)))
+        return result
+
     def compose_column(
         self,
         field: Field,
@@ -172,8 +191,38 @@ class IndexFieldCompositionPolicy(FieldCompositionPolicy):
                 name=field.name,
                 dtype=field.dtype,
                 metadata=field.metadata,
+                index_identity=field.identity if isinstance(field, IndexField) else None,
             )
         return field
+
+
+class IndexColumnFieldCompositionPolicy(FieldCompositionPolicy):
+    """Index reference columns compose only when they target the same identity."""
+
+    def compose_rows(
+        self,
+        fields: tuple[Field, ...],
+        context: CompositionContext,
+    ) -> Field:
+        self.check_row_compatible(_first_field(fields), fields[1:], context)
+        identities = {
+            field.index_identity
+            for field in fields
+            if isinstance(field, IndexColumnField) and field.index_identity is not None
+        }
+        if len(identities) > 1:
+            raise TypeError("Cannot compose IndexColumnField values with different identities.")
+        result = _normal_field(_first_field(fields))
+        if identities and isinstance(result, IndexColumnField):
+            return replace(result, index_identity=next(iter(identities)))
+        return result
+
+    def compose_key(
+        self,
+        fields: tuple[Field, ...],
+        context: CompositionContext,
+    ) -> Field:
+        return self.compose_rows(fields, context)
 
 
 _FIELD_POLICIES: dict[type[Field], FieldCompositionPolicy] = {}
@@ -288,3 +337,4 @@ register_field_policy(Field, FieldCompositionPolicy())
 register_field_policy(ValueField, ValueFieldCompositionPolicy())
 register_field_policy(DimensionField, DimensionFieldCompositionPolicy())
 register_field_policy(IndexField, IndexFieldCompositionPolicy())
+register_field_policy(IndexColumnField, IndexColumnFieldCompositionPolicy())

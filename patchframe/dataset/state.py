@@ -24,6 +24,7 @@ import pandas as pd
 
 from patchframe.data.descriptor import SourceDescriptor
 from patchframe.dataset.couplings import CouplingSet
+from patchframe.dataset.identity import ensure_primary_index_identity
 from patchframe.dataset.provenance import DatasetSourceInfo
 from patchframe.dataset.schema import Schema
 
@@ -44,6 +45,10 @@ class DatasetState:
     def __post_init__(self) -> None:
         if not self.table.index.is_unique:
             raise ValueError("Dataset table index must be unique.")
-        object.__setattr__(self, "schema", deepcopy(self.schema))
+        object.__setattr__(
+            self,
+            "schema",
+            ensure_primary_index_identity(deepcopy(self.schema)),
+        )
         object.__setattr__(self, "couplings", deepcopy(self.couplings))
         object.__setattr__(self, "metadata", deepcopy(dict(self.metadata)))

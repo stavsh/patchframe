@@ -21,6 +21,7 @@ import numpy as np
 import pandas as pd
 
 from patchframe.data.dimensions import Dimension
+from patchframe.dataset.identity import IndexIdentity
 
 # ---------------------------------------------------------------------------
 # Dtype conversion helpers
@@ -148,6 +149,7 @@ class IndexField(Field):
     logical_type: ClassVar[str] = "index"
     nullable: bool = False
     primary: bool = True
+    identity: IndexIdentity | None = None
 
     def __post_init__(self) -> None:
         # super() is unreliable with slots=True; call parent explicitly.
@@ -162,6 +164,7 @@ class IndexColumnField(Field):
     logical_type: ClassVar[str] = "index_column"
     nullable: bool = True
     primary: bool = False
+    index_identity: IndexIdentity | None = None
 
     def __post_init__(self) -> None:
         Field.__post_init__(self)

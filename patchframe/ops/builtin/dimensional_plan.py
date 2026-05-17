@@ -16,9 +16,10 @@ from patchframe.dataset.dataset import Dataset
 from patchframe.dataset.fields import (
     DimensionedSliceField,
     DimensionField,
+    IndexColumnField,
     IndexField,
-    ValueField,
 )
+from patchframe.dataset.identity import primary_index_field
 from patchframe.dataset.schema import Schema
 from patchframe.ops.base import PlanOperator
 
@@ -76,7 +77,11 @@ class make_dimensional_plan(PlanOperator):
         schema = Schema(
             fields=(
                 IndexField(name=plan_index_name),
-                ValueField(name=source_index_field, nullable=False),
+                IndexColumnField(
+                    name=source_index_field,
+                    nullable=False,
+                    index_identity=primary_index_field(dataset.schema).identity,
+                ),
                 DimensionedSliceField(name=slice_field, nullable=False),
             )
         )

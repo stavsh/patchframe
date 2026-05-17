@@ -10,11 +10,13 @@ import pandas as pd
 
 from patchframe.dataset.couplings import CouplingSet
 from patchframe.dataset.field_composition import CompositionContext, compose_key
-from patchframe.dataset.fields import IndexField, ValueField
+from patchframe.dataset.fields import IndexColumnField, IndexField
+from patchframe.dataset.identity import primary_index_field
 from patchframe.dataset.schema import Schema
 from patchframe.dataset.state import DatasetState
 from patchframe.ops.base import CompositionOperator
 from patchframe.ops.builtin._composition import normalize_field_names
+from patchframe.ops.transitions import AspectTransition, TransitionPlan
 
 JoinHow = Literal["inner", "left", "right", "outer"]
 _JOIN_HOWS: set[str] = {"inner", "left", "right", "outer"}
@@ -63,6 +65,14 @@ class DimensionJoin(JoinStrategy):
 class join(CompositionOperator):
     """Build a join-plan dataset mapping rows from two input datasets."""
 
+    transitions = TransitionPlan(
+        schema=AspectTransition("derive"),
+        table=AspectTransition("derive"),
+        couplings=AspectTransition("derive"),
+        sources=AspectTransition("union"),
+        index_identity=AspectTransition("mint"),
+    )
+
     def __call__(
         self,
         *datasets,
@@ -81,7 +91,7 @@ class join(CompositionOperator):
     ) -> Schema:
         left, right = _require_binary(states, self.name)
         _validate_strategy(left, right, strategy, self.name)
-        return _join_schema()
+        return _join_schema(left, right)
 
     def apply_table(
         self,
@@ -121,12 +131,20 @@ def _resolve_strategy(
     return strategy
 
 
-def _join_schema() -> Schema:
+def _join_schema(left: DatasetState, right: DatasetState) -> Schema:
+    left_index = primary_index_field(left.schema)
+    right_index = primary_index_field(right.schema)
     return Schema(
         fields=(
             IndexField(name="join_id"),
-            ValueField(name="left_index"),
-            ValueField(name="right_index"),
+            IndexColumnField(
+                name="left_index",
+                index_identity=left_index.identity,
+            ),
+            IndexColumnField(
+                name="right_index",
+                index_identity=right_index.identity,
+            ),
         )
     )
 

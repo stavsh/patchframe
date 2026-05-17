@@ -20,6 +20,7 @@ class set_index(DatasetOperator):
     transitions = TransitionPlan(
         schema=AspectTransition("derive"),
         table=AspectTransition("derive"),
+        index_identity=AspectTransition("mint"),
     )
 
     def apply_schema(
@@ -42,12 +43,18 @@ class set_index(DatasetOperator):
             if field_def.name == field:
                 output_fields.append(IndexField(name=target_name))
             elif field_def.primary and field_def.name != target_name:
+                index_identity = (
+                    field_def.identity
+                    if isinstance(field_def, IndexField)
+                    else None
+                )
                 output_fields.append(
                     IndexColumnField(
                         name=field_def.name,
                         dtype=field_def.dtype,
                         nullable=True,
                         metadata=field_def.metadata,
+                        index_identity=index_identity,
                     )
                 )
             else:

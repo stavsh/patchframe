@@ -15,6 +15,11 @@ from patchframe.dataset.field_composition import (
     compose_rows,
 )
 from patchframe.dataset.fields import Field, IndexField
+from patchframe.dataset.identity import (
+    new_index_identity,
+    primary_index_identity,
+    with_primary_index_identity,
+)
 from patchframe.dataset.schema import Schema
 from patchframe.dataset.state import DatasetState
 from patchframe.ops.base import CompositionOperator
@@ -26,10 +31,19 @@ from patchframe.ops.builtin._composition import (
     resolve_collision_column,
     union_couplings,
 )
+from patchframe.ops.transitions import AspectTransition, TransitionPlan
 
 
 class concat_rows(CompositionOperator):
     """Stack datasets by rows."""
+
+    transitions = TransitionPlan(
+        schema=AspectTransition("derive"),
+        table=AspectTransition("derive"),
+        couplings=AspectTransition("derive"),
+        sources=AspectTransition("union"),
+        index_identity=AspectTransition("row_stack"),
+    )
 
     def apply_schema(self, *states: DatasetState, **_: Any) -> Schema:
         _require_states(states, self.name)
@@ -44,7 +58,10 @@ class concat_rows(CompositionOperator):
                     CompositionContext(role="column_add", op=self.name),
                 )
             )
-        return Schema(fields=tuple(output_fields))
+        return _with_primary_identity(
+            Schema(fields=tuple(output_fields)),
+            _row_stack_index_identity(states),
+        )
 
     def apply_table(self, *states: DatasetState, **_: Any) -> pd.DataFrame:
         _require_states(states, self.name)
@@ -73,6 +90,14 @@ class concat_rows(CompositionOperator):
 
 class concat_columns(CompositionOperator):
     """Compose datasets by columns, aligning rows by pandas index."""
+
+    transitions = TransitionPlan(
+        schema=AspectTransition("derive"),
+        table=AspectTransition("derive"),
+        couplings=AspectTransition("derive"),
+        sources=AspectTransition("union"),
+        index_identity=AspectTransition("align_rows"),
+    )
 
     def apply_schema(
         self,
@@ -106,7 +131,10 @@ class concat_columns(CompositionOperator):
                     strategy,
                     self.name,
                 )
-        return Schema(fields=tuple(output_fields))
+        return _with_primary_identity(
+            Schema(fields=tuple(output_fields)),
+            _aligned_index_identity(states),
+        )
 
     def apply_table(
         self,
@@ -147,6 +175,14 @@ class concat_columns(CompositionOperator):
 
 class concat(CompositionOperator):
     """Dispatch to ``concat_rows`` or ``concat_columns``."""
+
+    transitions = TransitionPlan(
+        schema=AspectTransition("dispatch"),
+        table=AspectTransition("dispatch"),
+        couplings=AspectTransition("dispatch"),
+        sources=AspectTransition("dispatch"),
+        index_identity=AspectTransition("dispatch"),
+    )
 
     def __call__(self, *datasets: Dataset, axis: int = 0, **kwargs: Any) -> Dataset:
         if axis == 0:
@@ -190,3 +226,45 @@ def _table_for_output_schema(state: DatasetState, schema: Schema) -> pd.DataFram
 def _require_states(states: tuple[DatasetState, ...], op_name: str) -> None:
     if not states:
         raise ValueError(f"{op_name} requires at least one dataset.")
+
+
+def _row_stack_index_identity(states: tuple[DatasetState, ...]):
+    identities = {
+        identity
+        for identity in (_maybe_primary_index_identity(state) for state in states)
+        if identity is not None
+    }
+    if not identities:
+        return None
+    if len(identities) == 1:
+        return next(iter(identities))
+    return new_index_identity()
+
+
+def _aligned_index_identity(states: tuple[DatasetState, ...]):
+    identities = {
+        identity
+        for identity in (_maybe_primary_index_identity(state) for state in states)
+        if identity is not None
+    }
+    if not identities:
+        return None
+    if len(identities) == 1:
+        return next(iter(identities))
+    return new_index_identity()
+
+
+def _maybe_primary_index_identity(state: DatasetState):
+    try:
+        return primary_index_identity(state)
+    except ValueError:
+        return None
+
+
+def _with_primary_identity(schema: Schema, identity):
+    if identity is None:
+        return schema
+    try:
+        return with_primary_index_identity(schema, identity)
+    except ValueError:
+        return schema

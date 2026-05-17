@@ -17,6 +17,12 @@ The core package is intentionally small and non-geometric. It models datasets as
 
 Early development.
 
+## Design posture
+
+Patchframe is built by using its abstractions hard enough that weak ones
+"shatter in your hands." Real examples drive the shape of the package; when a
+tool cracks under use, the surviving pieces become the next design.
+
 ## Core ideas
 
 A dataset is defined by four top-level aspects:
@@ -116,6 +122,23 @@ the DataFrame index is row identity, not only a pandas alignment label. This
 constraint may be relaxed around the number of index-like fields in the future,
 but the primary dataset row identity must remain unique.
 
+## Semantic state propagation
+
+Patchframe state should describe semantic meaning, not only the current
+materialized content. Semantic state is minted at creation boundaries and then
+preserved, replaced, or invalidated by operator-specific transition rules.
+
+Content-derived fingerprints are still useful for validation, caching, and
+diagnostics, but they should not define semantic identity. For example, a
+filtered dataset can keep the same row identity namespace as its parent even
+though its row content changed, while a newly generated plan dataset should
+create its own row identity namespace and carry index-reference columns back
+to the source namespace.
+
+This propagation-first model is why schema fields, couplings, sources, and
+index identities should be explicit state carried through operators rather
+than repeatedly inferred from table values.
+
 ## Ergonomics Principle
 
 Patchframe should keep common dataset usage natural while preserving explicit
@@ -167,6 +190,20 @@ Creates a dataset from external input. Subclasses must implement `generate_sourc
 Combines multiple datasets into one. All three structural hooks (`apply_schema`, `apply_table`, `apply_couplings`) are required — there is no sensible default for N-ary composition. Sources are unioned by default.
 
 All three families support a full escape hatch by overriding `__call__` directly.
+
+### Transition ontology TODO
+
+`AspectTransition("derive")` is currently overused as a catch-all for "this
+operator changes the aspect somehow." That is useful during early development
+but should not become the final ontology. Transitions should move toward a
+small, explicit vocabulary whose modes can be checked mechanically.
+
+The long-term goal is operator contract testing: given an operator's declared
+transition plan, test utilities should be able to validate that an
+implementation preserves, mints, unions, drops, or rewrites each aspect
+according to its declaration. This should let extension authors verify custom
+operators against patchframe's structural invariants without hand-writing every
+contract test.
 
 ## Composition policies
 

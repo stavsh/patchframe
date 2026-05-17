@@ -10,6 +10,7 @@ def test_top_level_exports_core_dataset_objects():
     assert pf.DatasetState
     assert pf.Schema
     assert pf.IndexField
+    assert pf.IndexIdentity
     assert pf.ValueField
     assert pf.ArrayDataSource
     assert pf.AxisWindow

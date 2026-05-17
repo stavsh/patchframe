@@ -12,7 +12,8 @@ from patchframe.dataset.field_composition import (
     CompositionContext,
     compose_column,
 )
-from patchframe.dataset.fields import Field, IndexField
+from patchframe.dataset.fields import Field, IndexColumnField, IndexField
+from patchframe.dataset.identity import primary_index_identity
 from patchframe.dataset.schema import Schema
 from patchframe.dataset.state import DatasetState
 from patchframe.ops.base import CompositionOperator
@@ -23,6 +24,7 @@ from patchframe.ops.builtin._composition import (
     resolve_collision_column,
     union_couplings,
 )
+from patchframe.ops.transitions import AspectTransition, TransitionPlan
 
 _LEFT_INDEX = "left_index"
 _RIGHT_INDEX = "right_index"
@@ -32,6 +34,14 @@ _JOIN_MAPPING_NAMES = (_LEFT_INDEX, _RIGHT_INDEX)
 class merge(CompositionOperator):
     """Materialize two datasets according to an explicit join-plan dataset."""
 
+    transitions = TransitionPlan(
+        schema=AspectTransition("derive"),
+        table=AspectTransition("derive"),
+        couplings=AspectTransition("derive"),
+        sources=AspectTransition("union"),
+        index_identity=AspectTransition("inherit", {"input": 2}),
+    )
+
     def apply_schema(
         self,
         *states: DatasetState,
@@ -40,6 +50,8 @@ class merge(CompositionOperator):
     ) -> Schema:
         left, right, join_plan = _require_merge_states(states, self.name)
         _validate_join_plan(join_plan, self.name)
+        _validate_mapping_identity(left, join_plan, _LEFT_INDEX, "left", self.name)
+        _validate_mapping_identity(right, join_plan, _RIGHT_INDEX, "right", self.name)
         _validate_reserved_input_names(left, "left", self.name)
         _validate_reserved_input_names(right, "right", self.name)
 
@@ -79,6 +91,8 @@ class merge(CompositionOperator):
     ) -> pd.DataFrame:
         left, right, join_plan = _require_merge_states(states, self.name)
         _validate_join_plan(join_plan, self.name)
+        _validate_mapping_identity(left, join_plan, _LEFT_INDEX, "left", self.name)
+        _validate_mapping_identity(right, join_plan, _RIGHT_INDEX, "right", self.name)
         _validate_mapping_labels(left, join_plan.table[_LEFT_INDEX], "left", self.name)
         _validate_mapping_labels(right, join_plan.table[_RIGHT_INDEX], "right", self.name)
 
@@ -141,6 +155,23 @@ def _validate_join_plan(join_plan: DatasetState, op_name: str) -> None:
     if index_fields:
         raise ValueError(
             f"{op_name}: join-plan mapping fields must be table-backed: {index_fields}"
+        )
+
+
+def _validate_mapping_identity(
+    state: DatasetState,
+    join_plan: DatasetState,
+    field_name: str,
+    side: str,
+    op_name: str,
+) -> None:
+    field = join_plan.schema.get(field_name)
+    if not isinstance(field, IndexColumnField) or field.index_identity is None:
+        return
+    if field.index_identity != primary_index_identity(state):
+        raise ValueError(
+            f"{op_name}: join plan {field_name!r} does not reference the "
+            f"{side} dataset index identity."
         )
 
 

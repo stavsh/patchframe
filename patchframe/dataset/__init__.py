@@ -33,6 +33,14 @@ from patchframe.dataset.fields import (
     dtype_compatible,
     to_nullable_dtype,
 )
+from patchframe.dataset.identity import (
+    IndexIdentity,
+    ensure_primary_index_identity,
+    mint_primary_index_identity,
+    new_index_identity,
+    primary_index_field,
+    primary_index_identity,
+)
 from patchframe.dataset.provenance import DatasetSourceInfo
 from patchframe.dataset.schema import Schema
 from patchframe.dataset.state import DatasetState
@@ -56,6 +64,7 @@ __all__ = [
     "FieldRef",
     "IndexColumnField",
     "IndexField",
+    "IndexIdentity",
     "Materialize",
     "Schema",
     "ValueField",
@@ -63,8 +72,13 @@ __all__ = [
     "compose_key",
     "compose_rows",
     "dtype_compatible",
+    "ensure_primary_index_identity",
     "field_policy_for",
+    "mint_primary_index_identity",
+    "new_index_identity",
     "normalize_column",
+    "primary_index_field",
+    "primary_index_identity",
     "register_field_policy",
     "resolve_column_collision",
     "to_nullable_dtype",

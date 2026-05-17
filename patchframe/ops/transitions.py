@@ -31,3 +31,6 @@ class TransitionPlan:
     couplings: AspectTransition = field(default_factory=lambda: AspectTransition("preserve"))
     sources: AspectTransition = field(default_factory=lambda: AspectTransition("inherit"))
     accessors: AspectTransition = field(default_factory=lambda: AspectTransition("preserve"))
+    index_identity: AspectTransition = field(
+        default_factory=lambda: AspectTransition("preserve")
+    )
