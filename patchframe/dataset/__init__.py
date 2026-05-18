@@ -27,6 +27,7 @@ from patchframe.dataset.fields import (
     DimensionField,
     DimensionedSliceField,
     Field,
+    ForeignIndexField,
     IndexColumnField,
     IndexField,
     ValueField,
@@ -36,10 +37,12 @@ from patchframe.dataset.fields import (
 from patchframe.dataset.identity import (
     IndexIdentity,
     ensure_primary_index_identity,
+    foreign_index_fields,
     mint_primary_index_identity,
     new_index_identity,
     primary_index_field,
     primary_index_identity,
+    resolve_foreign_index_field,
 )
 from patchframe.dataset.provenance import DatasetSourceInfo
 from patchframe.dataset.schema import Schema
@@ -62,6 +65,7 @@ __all__ = [
     "Field",
     "FieldCompositionPolicy",
     "FieldRef",
+    "ForeignIndexField",
     "IndexColumnField",
     "IndexField",
     "IndexIdentity",
@@ -74,12 +78,14 @@ __all__ = [
     "dtype_compatible",
     "ensure_primary_index_identity",
     "field_policy_for",
+    "foreign_index_fields",
     "mint_primary_index_identity",
     "new_index_identity",
     "normalize_column",
     "primary_index_field",
     "primary_index_identity",
     "register_field_policy",
+    "resolve_foreign_index_field",
     "resolve_column_collision",
     "to_nullable_dtype",
 ]

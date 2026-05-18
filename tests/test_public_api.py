@@ -11,6 +11,7 @@ def test_top_level_exports_core_dataset_objects():
     assert pf.Schema
     assert pf.IndexField
     assert pf.IndexIdentity
+    assert pf.ForeignIndexField
     assert pf.ValueField
     assert pf.ArrayDataSource
     assert pf.AxisWindow
@@ -25,7 +26,8 @@ def test_top_level_exports_user_facing_operators():
     assert pf.concat
     assert pf.join
     assert pf.merge
+    assert pf.explode
     assert pf.bind_dimensions
     assert pf.bind_slice
-    assert pf.make_dimensional_plan
+    assert pf.window_expansion_plan
     assert pf.PlanOperator

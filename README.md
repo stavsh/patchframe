@@ -132,8 +132,8 @@ Content-derived fingerprints are still useful for validation, caching, and
 diagnostics, but they should not define semantic identity. For example, a
 filtered dataset can keep the same row identity namespace as its parent even
 though its row content changed, while a newly generated plan dataset should
-create its own row identity namespace and carry index-reference columns back
-to the source namespace.
+create its own row identity namespace and carry `ForeignIndexField` columns
+back to the source namespace.
 
 This propagation-first model is why schema fields, couplings, sources, and
 index identities should be explicit state carried through operators rather
@@ -264,6 +264,8 @@ current built-in policies are:
 All normal table columns are nullable by design. `IndexField` is special because
 it represents the DataFrame index itself. `IndexColumnField` stores index values
 that were downgraded into an ordinary table column during composition.
+`ForeignIndexField` is the table-backed index-reference field for labels that
+point to another dataset's index identity.
 
 ### Column collision values
 
@@ -517,6 +519,8 @@ current built-in policies are:
 All normal table columns are nullable by design. `IndexField` is special because
 it represents the DataFrame index itself. `IndexColumnField` stores index values
 that were downgraded into an ordinary table column during composition.
+`ForeignIndexField` is the table-backed index-reference field for labels that
+point to another dataset's index identity.
 
 ### Column collision values
 
@@ -736,12 +740,13 @@ applying it.
 
 The naming convention should be:
 
-- `make_*_plan` or a specific planner name creates a plan dataset.
-- `*_by_plan` applies a plan dataset.
+- Specific planner names create plan datasets.
+- Generic operators apply plan datasets when their schema contains the required
+  planning fields.
 - Plan datasets remain normal datasets unless a future execution layer adds an
   explicit lazy/chunked plan object.
 
-### Dimensional expansion plans
+### Window expansion plans
 
 The next planned use of this idea is dimensional expansion: a general form of
 tiling, patch extraction, clipping, video windowing, DAS windowing, or other
@@ -755,7 +760,7 @@ a source dataset row plus a slice. The current core shape is:
 - optional plan metadata such as sampling reason, score, label id, overlap, or
   strategy
 
-`make_dimensional_plan` is the first implementation. It accepts extents from
+`window_expansion_plan` is the first implementation. It accepts extents from
 either a single `DimensionedSliceField` or from explicit `DimensionField`
 bindings in the same style as `bind_dimensions`. Single-column inputs may
 contain null rows, which are skipped. Multi-field bindings reject nulls because
@@ -774,17 +779,24 @@ source-native, random, adaptive, or multiscale planning can produce the same
 plan dataset through extension-owned code.
 
 `DatasetState.metadata` can carry lightweight, non-executable dataset metadata.
-Dimensional plans mark themselves under `patchframe.plan`; for now this is used
-to warn when `make_dimensional_plan` is called on an existing plan dataset.
+Window expansion plans mark themselves under `patchframe.plan`; for now this is
+used to warn when `window_expansion_plan` is called on an existing plan dataset.
 Planning over a plan currently means the new `source_index` values point to the
 input plan rows, not to the original source dataset. Dedicated plan-refinement
 semantics should be designed before relying on repeated planning.
 
-Applying such a plan should be a generic operation, tentatively named
-`explode_by_plan`, not an aerial- or raster-specific `retile`. It should gather
-source rows by unique index label, attach or compute a slice field, and bind
-that slice to one or more `DataField` columns. It should not materialize arrays
-unless a materialization coupling is explicitly present or consumed.
+Applying such a plan is a generic operation named `explode`, not an aerial- or
+raster-specific `retile`. It gathers source rows by a `ForeignIndexField`,
+overlays compatible plan fields, and preserves source couplings. It does not
+invent new slice bindings or materialize arrays unless a materialization
+coupling is explicitly present or consumed. If a plan dataset has couplings,
+`explode` warns that plan couplings are ignored and that the user should
+consider consuming plan bindings before applying the plan.
+
+Keeping the source mapping column, for example `source_index`, may be useful
+for traceability but changes the output schema. This is a concrete case where
+an operator's transition contract may depend on user flags, so it should wait
+until transition declarations can express flag-dependent schema behavior.
 
 This is important for sparse-label and large-extent datasets. Patchframe should
 not require the user to generate every possible tile and then spatially join
@@ -806,7 +818,7 @@ that can yield normal plan datasets or plan chunks.
 
 For now, the batch-friendly constraint is simple: plan application should accept
 any valid plan dataset. Future batching can feed smaller plan datasets into the
-same `*_by_plan` operator without changing the meaning of the operation.
+same apply operator without changing the meaning of the operation.
 
 ## First concrete operator
 
@@ -837,12 +849,12 @@ baseline:
   `DimensionedSliceArray` columns through `consume` without row-level
   `DimensionedSlice` materialization.
 - Benchmark scaffolding exists under `benchmarks/` for concat, join, merge,
-  dimensional plan creation, and non-materializing consume paths. Benchmark
+  window expansion plan creation, and non-materializing consume paths. Benchmark
   results are local artifacts and are ignored by git.
 - `DimensionedSliceArray` missing-mask construction uses vectorized
   `pd.isna`, which keeps million-row `consume(BindDimensions)` runs in the
   sub-second range for the current benchmark shape.
-- `make_dimensional_plan` produces concrete dimensional expansion plans with
+- `window_expansion_plan` produces concrete window expansion plans with
   `source_index` and columnar `slice` fields. It can plan from
   `DimensionedSliceField` extents or explicit `DimensionField` bindings, with
   window expansion handled by `DimensionedSliceArray`.
@@ -903,6 +915,14 @@ Known constraints before promoting `engine="polars"` into core operators:
   invariant.
 
 ## Future Extensions And TODOs
+
+### Field Handle Ergonomics
+
+A future user-facing layer may expose immutable symbolic field handles, for
+example through `ds.field("image")`. A field handle could carry the field name,
+field type, and owning index identity, then resolve only inside explicit
+dataset/operator contexts. This would support more fluent binding APIs without
+introducing a global pointer manager of live datasets or fields.
 
 ### Dask Execution Extension
 

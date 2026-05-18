@@ -38,9 +38,9 @@ from patchframe.ops.builtin.bind_dimensions import bind_dimensions
 from patchframe.ops.builtin.bind_slice import bind_slice
 from patchframe.ops.builtin.concat import concat_columns, concat_rows
 from patchframe.ops.builtin.consume import consume
-from patchframe.ops.builtin.dimensional_plan import make_dimensional_plan
 from patchframe.ops.builtin.join import FieldEqualityJoin, IndexJoin, join
 from patchframe.ops.builtin.merge import merge
+from patchframe.ops.builtin.window_expansion_plan import window_expansion_plan
 
 OperationRunner = Callable[[], Dataset]
 PhaseRunner = Callable[[], tuple[Dataset, dict[str, float]]]
@@ -53,7 +53,7 @@ DEFAULT_OPS = (
     "merge_inner",
     "merge_outer",
     "merge_collision_update_missing",
-    "make_dimensional_plan",
+    "window_expansion_plan",
     "consume_bind_dimensions",
     "consume_chained_dimensions",
     "consume_bind_slice",
@@ -203,11 +203,11 @@ def _make_case(name: str, args: argparse.Namespace) -> OperationCase:
             {"collision": collision},
         )
 
-    if name == "make_dimensional_plan":
-        ds = _dimensional_plan_dataset(rows, args)
+    if name == "window_expansion_plan":
+        ds = _window_expansion_plan_dataset(rows, args)
         return _call_case(
             name,
-            lambda: make_dimensional_plan(
+            lambda: window_expansion_plan(
                 ds,
                 bindings={
                     "x": dimension_bindings()["x"],
@@ -265,7 +265,7 @@ def _consume_dataset(rows: int, args: argparse.Namespace) -> Dataset:
     )
 
 
-def _dimensional_plan_dataset(rows: int, args: argparse.Namespace) -> Dataset:
+def _window_expansion_plan_dataset(rows: int, args: argparse.Namespace) -> Dataset:
     return make_multidim_dataset(
         rows,
         value_cols=args.value_cols,

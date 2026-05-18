@@ -6,8 +6,8 @@ from patchframe.ops.builtin.bind_materialize import bind_materialize
 from patchframe.ops.builtin.bind_slice import bind_slice
 from patchframe.ops.builtin.concat import concat, concat_columns, concat_rows
 from patchframe.ops.builtin.consume import consume
-from patchframe.ops.builtin.dimensional_plan import make_dimensional_plan
 from patchframe.ops.builtin.drop import drop
+from patchframe.ops.builtin.explode import explode
 from patchframe.ops.builtin.join import (
     DimensionJoin,
     FieldEqualityJoin,
@@ -21,6 +21,7 @@ from patchframe.ops.builtin.merge import merge
 from patchframe.ops.builtin.rename import rename
 from patchframe.ops.builtin.set_index import set_index
 from patchframe.ops.builtin.where import where
+from patchframe.ops.builtin.window_expansion_plan import window_expansion_plan
 
 __all__ = [
     "DimensionJoin",
@@ -35,8 +36,8 @@ __all__ = [
     "concat_columns",
     "concat_rows",
     "consume",
-    "make_dimensional_plan",
     "drop",
+    "explode",
     "join",
     "keep",
     "make_from_dataframe",
@@ -44,4 +45,5 @@ __all__ = [
     "rename",
     "set_index",
     "where",
+    "window_expansion_plan",
 ]

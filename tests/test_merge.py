@@ -154,14 +154,27 @@ class TestMerge:
         with pytest.raises(ValueError, match="missing required mapping columns"):
             merge(left, right, plan)
 
-    def test_missing_input_label_raises(self):
+    def test_join_plan_mapping_fields_must_be_foreign_index_fields(self):
         left = _dataset(pd.DataFrame({"score": [10]}, index=["a"]), ValueField(name="score"))
         right = _dataset(pd.DataFrame({"label": [20]}, index=["a"]), ValueField(name="label"))
         plan = _join_plan(
             pd.DataFrame(
-                {"left_index": ["missing"], "right_index": ["a"]},
+                {"left_index": ["a"], "right_index": ["a"]},
                 index=pd.RangeIndex(1, name="join_id"),
             )
+        )
+
+        with pytest.raises(TypeError, match="ForeignIndexField"):
+            merge(left, right, plan)
+
+    def test_missing_input_label_raises(self):
+        left = _dataset(pd.DataFrame({"score": [10]}, index=["a"]), ValueField(name="score"))
+        right = _dataset(pd.DataFrame({"label": [20]}, index=["a"]), ValueField(name="label"))
+        plan = join(left, right).replace_state(
+            table=pd.DataFrame(
+                {"left_index": ["missing"], "right_index": ["a"]},
+                index=pd.RangeIndex(1, name="join_id"),
+            ),
         )
 
         with pytest.raises(ValueError, match="missing from left dataset"):

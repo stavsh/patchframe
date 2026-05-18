@@ -105,9 +105,10 @@ def test_join_plan_mapping_fields_reference_input_identities():
 
     left_index = plan.schema.get("left_index")
     right_index = plan.schema.get("right_index")
-    assert isinstance(left_index, pf.IndexColumnField)
-    assert isinstance(right_index, pf.IndexColumnField)
+    assert isinstance(left_index, pf.ForeignIndexField)
+    assert isinstance(right_index, pf.ForeignIndexField)
     assert left_index.index_identity == pf.primary_index_identity(left)
+    assert left_index.target_identity == pf.primary_index_identity(left)
     assert right_index.index_identity == pf.primary_index_identity(right)
 
 
@@ -131,7 +132,7 @@ def test_merge_rejects_plan_referencing_different_input_identity():
         pf.merge(unrelated_left, right, plan, collision="keep")
 
 
-def test_dimensional_plan_source_index_references_source_identity():
+def test_window_expansion_plan_source_index_references_source_identity():
     x = pf.IndexDimension(name="x")
     table = pd.DataFrame(
         {"x0": [0], "x1": [4]},
@@ -146,12 +147,64 @@ def test_dimensional_plan_source_index_references_source_identity():
     )
     ds = pf.Dataset(state=pf.DatasetState(schema=schema, table=table))
 
-    plan = pf.make_dimensional_plan(
+    plan = pf.window_expansion_plan(
         ds,
         bindings={"x": ("x0", "x1")},
         windows={"x": pf.AxisWindow(2, 2)},
     )
 
     source_index = plan.schema.get("source_index")
-    assert isinstance(source_index, pf.IndexColumnField)
+    assert isinstance(source_index, pf.ForeignIndexField)
     assert source_index.index_identity == pf.primary_index_identity(ds)
+
+
+def test_foreign_index_field_requires_target_identity():
+    with pytest.raises(ValueError, match="requires index_identity"):
+        pf.ForeignIndexField(name="source_index")
+
+
+def test_resolve_foreign_index_field_finds_unique_target():
+    source = _dataset(["a"])
+    other = _dataset(["a"])
+    schema = pf.Schema(
+        fields=(
+            pf.IndexField(name="plan_id"),
+            pf.ForeignIndexField(
+                name="source_index",
+                index_identity=pf.primary_index_identity(source),
+            ),
+            pf.ForeignIndexField(
+                name="other_index",
+                index_identity=pf.primary_index_identity(other),
+            ),
+        )
+    )
+
+    field = pf.resolve_foreign_index_field(
+        schema,
+        pf.primary_index_identity(source),
+    )
+
+    assert field.name == "source_index"
+
+
+def test_resolve_foreign_index_field_requires_explicit_name_when_ambiguous():
+    source = _dataset(["a"])
+    identity = pf.primary_index_identity(source)
+    schema = pf.Schema(
+        fields=(
+            pf.IndexField(name="plan_id"),
+            pf.ForeignIndexField(name="source_index", index_identity=identity),
+            pf.ForeignIndexField(name="parent_index", index_identity=identity),
+        )
+    )
+
+    with pytest.raises(ValueError, match="expected exactly one"):
+        pf.resolve_foreign_index_field(schema, identity)
+
+    field = pf.resolve_foreign_index_field(
+        schema,
+        identity,
+        field_name="parent_index",
+    )
+    assert field.name == "parent_index"

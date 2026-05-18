@@ -1,4 +1,4 @@
-"""Tests for dimensional plan construction."""
+"""Tests for window expansion plan construction."""
 
 from __future__ import annotations
 
@@ -33,10 +33,10 @@ def _dimension_field_dataset() -> pf.Dataset:
     return pf.Dataset(state=pf.DatasetState(schema=schema, table=table))
 
 
-def test_make_dimensional_plan_from_dimension_field_bindings():
+def test_window_expansion_plan_from_dimension_field_bindings():
     ds = _dimension_field_dataset()
 
-    plan = pf.make_dimensional_plan(
+    plan = pf.window_expansion_plan(
         ds,
         bindings={"x": ("x0", "x1"), "y": ("y0", "y1")},
         windows={"x": pf.AxisWindow(20, 20), "y": pf.AxisWindow(10, 10)},
@@ -57,7 +57,7 @@ def test_make_dimensional_plan_from_dimension_field_bindings():
     }
 
 
-def test_make_dimensional_plan_from_slice_field_skips_null_rows():
+def test_window_expansion_plan_from_slice_field_skips_null_rows():
     x = pf.IndexDimension(name="x")
     table = pd.DataFrame(
         {
@@ -77,7 +77,7 @@ def test_make_dimensional_plan_from_slice_field_skips_null_rows():
     )
     ds = pf.Dataset(state=pf.DatasetState(schema=schema, table=table))
 
-    plan = pf.make_dimensional_plan(
+    plan = pf.window_expansion_plan(
         ds,
         field="extent",
         windows={"x": pf.AxisWindow(2, 2, include_partial=True)},
@@ -93,7 +93,7 @@ def test_make_dimensional_plan_from_slice_field_skips_null_rows():
     ]
 
 
-def test_make_dimensional_plan_from_columnar_slice_field():
+def test_window_expansion_plan_from_columnar_slice_field():
     x = pf.IndexDimension(name="x")
     extents = pf.DimensionedSliceArray.from_columns(
         dimensions=(x,),
@@ -109,7 +109,7 @@ def test_make_dimensional_plan_from_columnar_slice_field():
     )
     ds = pf.Dataset(state=pf.DatasetState(schema=schema, table=table))
 
-    plan = pf.make_dimensional_plan(
+    plan = pf.window_expansion_plan(
         ds,
         field="extent",
         windows={"x": pf.AxisWindow(2, 2)},
@@ -120,7 +120,7 @@ def test_make_dimensional_plan_from_columnar_slice_field():
     assert plan.table["slice"].iloc[-1].dims["x"] == slice(12, 14)
 
 
-def test_make_dimensional_plan_rejects_data_field_for_now():
+def test_window_expansion_plan_rejects_data_field_for_now():
     x = pf.IndexDimension(name="x")
     ds = make_mock_dataset(
         ["a"],
@@ -129,43 +129,44 @@ def test_make_dimensional_plan_rejects_data_field_for_now():
     )
 
     with pytest.raises(TypeError, match="must be a DimensionedSliceField"):
-        pf.make_dimensional_plan(
+        pf.window_expansion_plan(
             ds,
             field="data",
             windows={"x": pf.AxisWindow(2, 2, include_partial=True)},
         )
 
 
-def test_make_dimensional_plan_marks_plan_metadata_and_warns_on_plan_input():
+def test_window_expansion_plan_marks_plan_metadata_and_warns_on_plan_input():
     ds = _dimension_field_dataset()
-    plan = pf.make_dimensional_plan(
+    plan = pf.window_expansion_plan(
         ds,
         bindings={"x": ("x0", "x1")},
         windows={"x": pf.AxisWindow(20, 20)},
     )
 
     metadata = plan.state.metadata["patchframe.plan"]
-    assert metadata["type"] == "dimensional"
+    assert metadata["type"] == "window_expansion"
+    assert metadata["operator"] == "window_expansion_plan"
     assert metadata["source_index_field"] == "source_index"
     assert metadata["slice_field"] == "slice"
     assert metadata["input_index_name"] == "item_id"
 
     with pytest.warns(UserWarning, match="already marked as a plan"):
-        pf.make_dimensional_plan(
+        pf.window_expansion_plan(
             plan,
             field="slice",
             windows={"x": pf.AxisWindow(10, 10)},
         )
 
 
-def test_make_dimensional_plan_rejects_null_multi_field_bindings():
+def test_window_expansion_plan_rejects_null_multi_field_bindings():
     ds = _dimension_field_dataset()
     table = ds.table.copy()
     table.loc["b", "x0"] = pd.NA
     ds = ds.replace_state(table=table)
 
     with pytest.raises(ValueError, match="does not allow null values"):
-        pf.make_dimensional_plan(
+        pf.window_expansion_plan(
             ds,
             bindings={"x": ("x0", "x1")},
             windows={"x": pf.AxisWindow(20, 20)},

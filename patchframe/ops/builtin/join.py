@@ -10,7 +10,7 @@ import pandas as pd
 
 from patchframe.dataset.couplings import CouplingSet
 from patchframe.dataset.field_composition import CompositionContext, compose_key
-from patchframe.dataset.fields import IndexColumnField, IndexField
+from patchframe.dataset.fields import ForeignIndexField, IndexField
 from patchframe.dataset.identity import primary_index_field
 from patchframe.dataset.schema import Schema
 from patchframe.dataset.state import DatasetState
@@ -137,11 +137,11 @@ def _join_schema(left: DatasetState, right: DatasetState) -> Schema:
     return Schema(
         fields=(
             IndexField(name="join_id"),
-            IndexColumnField(
+            ForeignIndexField(
                 name="left_index",
                 index_identity=left_index.identity,
             ),
-            IndexColumnField(
+            ForeignIndexField(
                 name="right_index",
                 index_identity=right_index.identity,
             ),

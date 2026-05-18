@@ -12,9 +12,9 @@ from patchframe.ops.builtin.bind_dimensions import bind_dimensions
 from patchframe.ops.builtin.bind_slice import bind_slice
 from patchframe.ops.builtin.concat import concat_columns, concat_rows
 from patchframe.ops.builtin.consume import consume
-from patchframe.ops.builtin.dimensional_plan import make_dimensional_plan
 from patchframe.ops.builtin.join import join
 from patchframe.ops.builtin.merge import merge
+from patchframe.ops.builtin.window_expansion_plan import window_expansion_plan
 
 
 def test_operator_benchmark_factories_cover_concat_join_merge_paths():
@@ -59,7 +59,7 @@ def test_consume_bind_dimensions_keeps_dimensioned_slice_array_columnar():
     assert set(scalar.dims) == {"time", "x", "y"}
 
 
-def test_make_dimensional_plan_benchmark_path_expands_dimension_bindings():
+def test_window_expansion_plan_benchmark_path_expands_dimension_bindings():
     ds = make_multidim_dataset(
         1_000,
         value_cols=2,
@@ -67,7 +67,7 @@ def test_make_dimensional_plan_benchmark_path_expands_dimension_bindings():
         include_data=False,
     )
 
-    plan = make_dimensional_plan(
+    plan = window_expansion_plan(
         ds,
         bindings={"x": dimension_bindings()["x"], "y": dimension_bindings()["y"]},
         windows={"x": AxisWindow(32, 32), "y": AxisWindow(32, 32)},

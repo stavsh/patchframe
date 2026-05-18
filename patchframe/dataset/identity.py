@@ -82,3 +82,52 @@ def mint_primary_index_identity(schema: Any) -> Any:
     if maybe_primary_index_field(schema) is None:
         return schema
     return with_primary_index_identity(schema, new_index_identity())
+
+
+def foreign_index_fields(
+    schema: Any,
+    target_identity: IndexIdentity | None = None,
+) -> tuple[Any, ...]:
+    """Return foreign index fields in ``schema``, optionally filtered by target."""
+
+    from patchframe.dataset.fields import ForeignIndexField
+
+    fields = tuple(field for field in schema if isinstance(field, ForeignIndexField))
+    if target_identity is None:
+        return fields
+    return tuple(field for field in fields if field.target_identity == target_identity)
+
+
+def resolve_foreign_index_field(
+    schema: Any,
+    target_identity: IndexIdentity,
+    *,
+    field_name: str | None = None,
+    op_name: str = "foreign index resolver",
+) -> Any:
+    """Resolve a foreign index field targeting ``target_identity``.
+
+    If ``field_name`` is omitted, the schema must contain exactly one matching
+    foreign index field.
+    """
+
+    from patchframe.dataset.fields import ForeignIndexField
+
+    if field_name is not None:
+        field = schema.get(field_name)
+        if not isinstance(field, ForeignIndexField):
+            raise TypeError(f"{op_name}: field {field_name!r} is not a ForeignIndexField.")
+        if field.target_identity != target_identity:
+            raise ValueError(
+                f"{op_name}: ForeignIndexField {field_name!r} targets a different "
+                "index identity."
+            )
+        return field
+
+    matches = foreign_index_fields(schema, target_identity)
+    if len(matches) != 1:
+        raise ValueError(
+            f"{op_name}: expected exactly one ForeignIndexField targeting the "
+            f"requested index identity, found {len(matches)}."
+        )
+    return matches[0]

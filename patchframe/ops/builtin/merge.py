@@ -12,7 +12,7 @@ from patchframe.dataset.field_composition import (
     CompositionContext,
     compose_column,
 )
-from patchframe.dataset.fields import Field, IndexColumnField, IndexField
+from patchframe.dataset.fields import Field, ForeignIndexField, IndexField
 from patchframe.dataset.identity import primary_index_identity
 from patchframe.dataset.schema import Schema
 from patchframe.dataset.state import DatasetState
@@ -157,6 +157,17 @@ def _validate_join_plan(join_plan: DatasetState, op_name: str) -> None:
             f"{op_name}: join-plan mapping fields must be table-backed: {index_fields}"
         )
 
+    foreign_fields = [
+        name
+        for name in _JOIN_MAPPING_NAMES
+        if not isinstance(join_plan.schema.get(name), ForeignIndexField)
+    ]
+    if foreign_fields:
+        raise TypeError(
+            f"{op_name}: join-plan mapping fields must be ForeignIndexField: "
+            f"{foreign_fields}"
+        )
+
 
 def _validate_mapping_identity(
     state: DatasetState,
@@ -166,9 +177,9 @@ def _validate_mapping_identity(
     op_name: str,
 ) -> None:
     field = join_plan.schema.get(field_name)
-    if not isinstance(field, IndexColumnField) or field.index_identity is None:
+    if not isinstance(field, ForeignIndexField):
         return
-    if field.index_identity != primary_index_identity(state):
+    if field.target_identity != primary_index_identity(state):
         raise ValueError(
             f"{op_name}: join plan {field_name!r} does not reference the "
             f"{side} dataset index identity."
@@ -193,12 +204,9 @@ def _validate_mapping_labels(
     side: str,
     op_name: str,
 ) -> None:
-    index_values = set(state.table.index)
-    missing = [
-        label
-        for label in labels
-        if not _is_null_label(label) and label not in index_values
-    ]
+    null_mask = pd.isna(labels)
+    non_null_labels = labels[~null_mask]
+    missing = non_null_labels[~non_null_labels.isin(state.table.index)].tolist()
     if missing:
         raise ValueError(
             f"{op_name}: join plan references labels missing from {side} dataset: {missing}"
@@ -219,7 +227,7 @@ def _gather_table(
     if missing_columns:
         raise ValueError(f"{op_name}: input table is missing schema columns: {missing_columns}")
 
-    reindex_labels = [pd.NA if _is_null_label(label) else label for label in labels]
+    reindex_labels = labels.astype(object).mask(pd.isna(labels), pd.NA).to_numpy(dtype=object)
     result = state.table.reindex(reindex_labels).loc[:, columns]
     result.index = output_index
     return result
@@ -228,9 +236,3 @@ def _gather_table(
 def _table_fields(state: DatasetState) -> tuple[Field, ...]:
     return tuple(field for field in state.schema if not isinstance(field, IndexField))
 
-
-def _is_null_label(value: Any) -> bool:
-    if value is None or value is pd.NA:
-        return True
-    missing = pd.isna(value)
-    return isinstance(missing, bool) and missing

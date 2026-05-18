@@ -172,6 +172,26 @@ class IndexColumnField(Field):
 
 
 @dataclass(frozen=True, slots=True)
+class ForeignIndexField(IndexColumnField):
+    """Table-backed labels that reference another index identity."""
+
+    logical_type: ClassVar[str] = "foreign_index"
+
+    def __post_init__(self) -> None:
+        IndexColumnField.__post_init__(self)
+        if self.index_identity is None:
+            raise ValueError("ForeignIndexField requires index_identity.")
+
+    @property
+    def target_identity(self) -> IndexIdentity:
+        """Return the referenced index identity."""
+
+        if self.index_identity is None:
+            raise ValueError("ForeignIndexField requires index_identity.")
+        return self.index_identity
+
+
+@dataclass(frozen=True, slots=True)
 class ValueField(Field):
     """Regular scalar or object column."""
 

@@ -195,6 +195,7 @@ cython_debug/
 
 # Local benchmark outputs
 benchmarks/results/
+benchmark/results/
 
 # PyPI configuration file
 .pypirc

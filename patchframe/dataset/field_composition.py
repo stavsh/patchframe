@@ -211,7 +211,7 @@ class IndexColumnFieldCompositionPolicy(FieldCompositionPolicy):
             if isinstance(field, IndexColumnField) and field.index_identity is not None
         }
         if len(identities) > 1:
-            raise TypeError("Cannot compose IndexColumnField values with different identities.")
+            raise TypeError("Cannot compose index reference fields with different identities.")
         result = _normal_field(_first_field(fields))
         if identities and isinstance(result, IndexColumnField):
             return replace(result, index_identity=next(iter(identities)))

@@ -15,6 +15,7 @@ created via ``.instance(**params)``.
 
 from __future__ import annotations
 
+import warnings
 from abc import ABCMeta, abstractmethod
 from dataclasses import dataclass, replace
 from typing import Any, ClassVar, Self
@@ -25,10 +26,11 @@ from patchframe.data.manager import SourceManager, get_default_manager
 from patchframe.data.source import DataSource
 from patchframe.dataset.couplings import CouplingSet
 from patchframe.dataset.dataset import Dataset
-from patchframe.dataset.fields import IndexField
+from patchframe.dataset.fields import ForeignIndexField, IndexField
 from patchframe.dataset.identity import (
     mint_primary_index_identity,
     primary_index_identity,
+    resolve_foreign_index_field,
     with_primary_index_identity,
 )
 from patchframe.dataset.provenance import DatasetSourceInfo
@@ -366,6 +368,75 @@ class PlanOperator(Operator):
             raise ValueError(f"{self.name}: plan is missing required fields: {list(missing)}")
 
 
+class PlanConsumerMixin:
+    """Shared helpers for operators that consume explicit plan datasets."""
+
+    required_plan_fields: ClassVar[tuple[str, ...]] = ()
+
+    def validate_plan_dataset(
+        self,
+        plan: Dataset,
+        *,
+        required_fields: tuple[str, ...] | None = None,
+        warn_on_couplings: bool = True,
+    ) -> None:
+        fields = self.required_plan_fields if required_fields is None else required_fields
+        missing_schema = [name for name in fields if not plan.schema.has(name)]
+        missing_table = [name for name in fields if name not in plan.table.columns]
+        missing = tuple(dict.fromkeys((*missing_schema, *missing_table)))
+        if missing:
+            raise ValueError(f"{self.name}: plan is missing required fields: {list(missing)}")
+        if warn_on_couplings and plan.couplings.couplings:
+            warnings.warn(
+                f"{self.name}: plan couplings are ignored. Consider consuming plan "
+                "dataset bindings before applying the plan.",
+                UserWarning,
+                stacklevel=3,
+            )
+
+    def resolve_plan_foreign_index(
+        self,
+        plan: Dataset,
+        target: Dataset,
+        *,
+        field_name: str | None = None,
+    ) -> ForeignIndexField:
+        target_identity = primary_index_identity(target)
+        field = resolve_foreign_index_field(
+            plan.schema,
+            target_identity,
+            field_name=field_name,
+            op_name=self.name,
+        )
+        if field.name not in plan.table.columns:
+            raise ValueError(
+                f"{self.name}: ForeignIndexField {field.name!r} is missing from plan table."
+            )
+        return field
+
+    def validate_foreign_index_labels(
+        self,
+        target: Dataset,
+        labels: pd.Series,
+        *,
+        field_name: str,
+        allow_null: bool = False,
+    ) -> None:
+        null_mask = pd.isna(labels)
+        if not allow_null and null_mask.any():
+            raise ValueError(
+                f"{self.name}: foreign index field {field_name!r} contains null labels."
+            )
+
+        non_null_labels = labels[~null_mask]
+        missing = non_null_labels[~non_null_labels.isin(target.table.index)].tolist()
+        if missing:
+            raise ValueError(
+                f"{self.name}: foreign index field {field_name!r} references labels "
+                f"missing from target dataset: {missing}"
+            )
+
+
 class CompositionOperator(Operator):
     """Combines multiple datasets into one.
 
@@ -416,3 +487,10 @@ class CompositionOperator(Operator):
 
     @abstractmethod
     def apply_couplings(self, *states: DatasetState, **kwargs: Any) -> CouplingSet: ...
+
+
+def _is_null_label(value: Any) -> bool:
+    if value is None or value is pd.NA:
+        return True
+    missing = pd.isna(value)
+    return isinstance(missing, bool) and missing
