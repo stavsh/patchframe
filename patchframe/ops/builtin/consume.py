@@ -24,7 +24,7 @@ import pandas as pd
 from patchframe.dataset.couplings import Coupling
 from patchframe.dataset.state import DatasetState
 from patchframe.ops.base import DatasetOperator
-from patchframe.ops.transitions import AspectTransition, TransitionPlan
+from patchframe.ops.transitions import Cardinality, SchemaTransition, TransitionPlan
 
 
 class consume(DatasetOperator):
@@ -37,7 +37,8 @@ class consume(DatasetOperator):
         of that specific coupling, plus the coupling itself, no downstream).
     """
 
-    transitions = TransitionPlan(table=AspectTransition("derive"))
+    transitions = TransitionPlan(schema=SchemaTransition.preserve())
+    cardinality = Cardinality.PRESERVE
 
     def apply_table(
         self,

@@ -20,6 +20,30 @@ def new_index_identity() -> IndexIdentity:
     return IndexIdentity(id=str(uuid4()))
 
 
+@dataclass(frozen=True, slots=True)
+class FieldIdentity:
+    """Stable semantic identity for a schema field across operator transitions.
+
+    Minted at field construction, preserved when a field is renamed, retyped,
+    or otherwise transformed via ``dataclasses.replace``, and freshly minted
+    for genuinely new fields.
+
+    Excluded from structural field equality (``Field`` declares it
+    ``compare=False``): two fields with the same shape but different lineage
+    are still ``==``. Compare ``field_identity`` explicitly where lineage
+    matters. Also intended as the stable token a future field-reference layer
+    resolves against.
+    """
+
+    id: str
+
+
+def new_field_identity() -> FieldIdentity:
+    """Return a fresh semantic identity for a schema field."""
+
+    return FieldIdentity(id=str(uuid4()))
+
+
 def primary_index_field(schema: Any) -> Any:
     """Return the primary ``IndexField`` from a schema-like object."""
 

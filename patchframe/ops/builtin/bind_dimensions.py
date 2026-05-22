@@ -6,12 +6,12 @@ from typing import Any
 
 import pandas as pd
 
-from patchframe.dataset.couplings import BindDimensions, CouplingSet
+from patchframe.dataset.couplings import BindDimensions
 from patchframe.dataset.fields import DimensionedSliceField, DimensionField
 from patchframe.dataset.schema import Schema
 from patchframe.dataset.state import DatasetState
 from patchframe.ops.base import DatasetOperator
-from patchframe.ops.transitions import AspectTransition, TransitionPlan
+from patchframe.ops.transitions import Cardinality, SchemaTransition, TransitionPlan
 
 
 class bind_dimensions(DatasetOperator):
@@ -47,11 +47,8 @@ class bind_dimensions(DatasetOperator):
     ds = bind_dimensions(ds, slice_field="clip", bindings={"y": ("y0", "y1")})
     """
 
-    transitions = TransitionPlan(
-        schema=AspectTransition("derive"),
-        table=AspectTransition("derive"),
-        couplings=AspectTransition("derive"),
-    )
+    transitions = TransitionPlan(schema=SchemaTransition.extend())
+    cardinality = Cardinality.PRESERVE
 
     def apply_schema(
         self,
@@ -92,14 +89,11 @@ class bind_dimensions(DatasetOperator):
         df[slice_field] = None
         return df
 
-    def apply_couplings(
+    def new_couplings(
         self,
         state: DatasetState,
         slice_field: str,
         bindings: Any,
         **_: Any,
-    ) -> CouplingSet:
-        new_coupling = BindDimensions(slice_field=slice_field, bindings=bindings)
-        if new_coupling in state.couplings.couplings:
-            return state.couplings
-        return state.couplings.add(new_coupling)
+    ) -> tuple[BindDimensions, ...]:
+        return (BindDimensions(slice_field=slice_field, bindings=bindings),)

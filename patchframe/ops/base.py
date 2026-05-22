@@ -24,8 +24,9 @@ import pandas as pd
 
 from patchframe.data.manager import SourceManager, get_default_manager
 from patchframe.data.source import DataSource
-from patchframe.dataset.couplings import CouplingSet
+from patchframe.dataset.couplings import Coupling, CouplingSet
 from patchframe.dataset.dataset import Dataset
+from patchframe.dataset.field_composition import resolve_merged_fields
 from patchframe.dataset.fields import ForeignIndexField, IndexField
 from patchframe.dataset.identity import (
     mint_primary_index_identity,
@@ -36,7 +37,15 @@ from patchframe.dataset.identity import (
 from patchframe.dataset.provenance import DatasetSourceInfo
 from patchframe.dataset.schema import Schema
 from patchframe.dataset.state import DatasetState
-from patchframe.ops.transitions import AspectTransition, TransitionPlan
+from patchframe.ops.transitions import (
+    Cardinality,
+    CouplingsTransition,
+    IndexIdentityTransition,
+    SchemaTransition,
+    SourcesTransition,
+    TableTransition,
+    TransitionPlan,
+)
 
 MISSING = object()
 
@@ -79,6 +88,7 @@ class Operator(metaclass=OperatorMeta):
     """Base callable/configurable operator."""
 
     transitions: ClassVar[TransitionPlan] = TransitionPlan()
+    cardinality: ClassVar[Cardinality] = Cardinality.UNKNOWN
     __parameters__: ClassVar[dict[str, Parameter]]
 
     def __init__(self, **bound_params: Any) -> None:
@@ -124,6 +134,15 @@ class Operator(metaclass=OperatorMeta):
         """Return declared parameter names in definition order."""
         return tuple(cls.__parameters__.keys())
 
+    def resolve_transitions(self, *args: Any, **kwargs: Any) -> TransitionPlan:
+        """Return the precise transition plan for this call.
+
+        The default returns the class-level declaration. Operators with
+        flag-dependent contracts override this to refine the conservative
+        class-level plan from call-time inputs.
+        """
+        return self.transitions
+
     def _normalize_bound_params(self, params: dict[str, Any]) -> dict[str, Any]:
         unknown = set(params) - set(self.__parameters__)
         if unknown:
@@ -160,30 +179,35 @@ class DatasetOperator(Operator):
         return self._apply(dataset, *args, **kwargs)
 
     def _apply(self, dataset: Dataset, *args: Any, **kwargs: Any) -> Dataset:
-        t, s = self.transitions, dataset.state
+        s = dataset.state
+        t = self.resolve_transitions(s, *args, **kwargs)
+
         schema = (
-            self.apply_schema(s, *args, **kwargs)
-            if t.schema.mode != "preserve"
-            else s.schema
+            s.schema
+            if t.schema.mode == "preserve"
+            else self.apply_schema(s, *args, **kwargs)
         )
-        schema = self.apply_index_identity(s, schema, *args, **kwargs)
+        schema = self.apply_index_identity(s, schema, t.index_identity, *args, **kwargs)
+
+        table = (
+            s.table
+            if t.table.mode == "preserve"
+            else self.apply_table(s, *args, **kwargs)
+        )
+
+        couplings = self._resolve_couplings(s, t, schema, *args, **kwargs)
+
+        sources = (
+            s.sources
+            if t.sources.mode == "inherit"
+            else self.apply_sources(s, *args, **kwargs)
+        )
+
         result = dataset.replace_state(
             schema=schema,
-            table=(
-                self.apply_table(s, *args, **kwargs)
-                if t.table.mode != "preserve"
-                else s.table
-            ),
-            couplings=(
-                self.apply_couplings(s, *args, **kwargs)
-                if t.couplings.mode != "preserve"
-                else s.couplings
-            ),
-            sources=(
-                self.apply_sources(s, *args, **kwargs)
-                if t.sources.mode != "inherit"
-                else s.sources
-            ),
+            table=table,
+            couplings=couplings,
+            sources=sources,
         )
         self._validate_output(result)
         return result
@@ -192,12 +216,13 @@ class DatasetOperator(Operator):
         self,
         state: DatasetState,
         schema: Schema,
+        transition: IndexIdentityTransition,
         *args: Any,
         **kwargs: Any,
     ) -> Schema:
-        """Apply the declared primary index identity transition to ``schema``."""
+        """Apply the resolved primary index identity transition to ``schema``."""
 
-        mode = self.transitions.index_identity.mode
+        mode = transition.mode
         if mode == "preserve":
             try:
                 return with_primary_index_identity(schema, primary_index_identity(state))
@@ -205,11 +230,80 @@ class DatasetOperator(Operator):
                 return schema
         if mode == "mint":
             return mint_primary_index_identity(schema)
-        if mode == "derive":
-            return schema
         raise ValueError(
-            f"{self.name}: unsupported index identity transition mode {mode!r}."
+            f"{self.name}: a DatasetOperator cannot use index identity mode "
+            f"{mode!r}; expected 'preserve' or 'mint'."
         )
+
+    def _resolve_couplings(
+        self,
+        state: DatasetState,
+        transitions: TransitionPlan,
+        output_schema: Schema,
+        *args: Any,
+        **kwargs: Any,
+    ) -> CouplingSet:
+        """Produce the output coupling set from the resolved transition plan."""
+        mode = transitions.couplings.mode
+        if mode == "clear":
+            return CouplingSet()
+        if mode in ("union", "construct"):
+            return self.apply_couplings(state, *args, **kwargs)
+
+        # mode == "derive": derive surviving couplings from the schema
+        # transition, then append any operator-declared new couplings.
+        derived = self._derive_couplings(state, output_schema, transitions.schema)
+        new = self.new_couplings(state, *args, **kwargs)
+        if not new:
+            return derived
+        existing = set(derived.couplings)
+        additions = tuple(c for c in new if c not in existing)
+        return derived.add(*additions) if additions else derived
+
+    def _derive_couplings(
+        self,
+        state: DatasetState,
+        output_schema: Schema,
+        schema_transition: SchemaTransition,
+    ) -> CouplingSet:
+        """Derive surviving couplings from the declared schema transition."""
+        couplings = state.couplings
+        if not couplings.couplings:
+            return couplings
+
+        mode = schema_transition.mode
+        if mode in ("preserve", "extend"):
+            return couplings
+        if mode == "rewrite" and schema_transition.mapping:
+            return couplings.rewrite_field_names(dict(schema_transition.mapping))
+
+        # narrow / infer / construct / rewrite-without-mapping: conservatively
+        # retain couplings whose referenced fields all survive in the output
+        # schema, dropping the rest with a warning.
+        surviving = set(output_schema.names())
+        retained = couplings.retain(surviving)
+        dropped = len(couplings.couplings) - len(retained.couplings)
+        if dropped:
+            warnings.warn(
+                f"{self.name}: dropped {dropped} coupling(s) referencing fields "
+                "that did not survive the schema transition.",
+                UserWarning,
+                stacklevel=4,
+            )
+        return retained
+
+    def new_couplings(
+        self,
+        state: DatasetState,
+        *args: Any,
+        **kwargs: Any,
+    ) -> tuple[Coupling, ...]:
+        """Couplings this operator adds, appended to the derived coupling set.
+
+        Override for operators that append couplings (the ``bind_*`` family).
+        Returns an empty tuple by default.
+        """
+        return ()
 
     def _validate_output(self, dataset: Dataset) -> None:
         """Validate the output dataset. Override to customize or suppress."""
@@ -251,6 +345,13 @@ class CreationOperator(Operator):
     Override ``__call__`` directly for a full escape hatch.
     """
 
+    transitions: ClassVar[TransitionPlan] = TransitionPlan(
+        schema=SchemaTransition.construct(),
+        table=TableTransition.construct(),
+        couplings=CouplingsTransition.construct(),
+        sources=SourcesTransition.construct(),
+        index_identity=IndexIdentityTransition.mint(),
+    )
     source_manager: ClassVar[Parameter] = Parameter(default=None)
 
     def __call__(self, *args: Any, **kwargs: Any) -> Dataset:
@@ -300,7 +401,10 @@ class PlanOperator(Operator):
     """
 
     transitions: ClassVar[TransitionPlan] = TransitionPlan(
-        index_identity=AspectTransition("mint"),
+        schema=SchemaTransition.construct(),
+        table=TableTransition.construct(),
+        couplings=CouplingsTransition.clear(),
+        index_identity=IndexIdentityTransition.mint(),
     )
     plan_index_name: ClassVar[str] = "plan_id"
     required_plan_fields: ClassVar[tuple[str, ...]] = ()
@@ -447,11 +551,11 @@ class CompositionOperator(Operator):
     """
 
     transitions: ClassVar[TransitionPlan] = TransitionPlan(
-        schema    = AspectTransition("derive"),
-        table     = AspectTransition("derive"),
-        couplings = AspectTransition("derive"),
-        sources   = AspectTransition("union"),
-        index_identity=AspectTransition("derive"),
+        schema=SchemaTransition.construct(),
+        table=TableTransition.construct(),
+        couplings=CouplingsTransition.union(),
+        sources=SourcesTransition.union(),
+        index_identity=IndexIdentityTransition.coalesce(),
     )
 
     def __call__(self, *datasets: Dataset, **kwargs: Any) -> Dataset:
@@ -459,24 +563,45 @@ class CompositionOperator(Operator):
 
     def _compose(self, *datasets: Dataset, **kwargs: Any) -> Dataset:
         states = tuple(d.state for d in datasets)
+        # apply_schema may return an intermediate schema carrying MergedFields.
+        # Every aspect hook receives that intermediate so it can transform its
+        # aspect from the collision lineage; MergedFields are resolved only
+        # after all hooks have run.
+        composed_schema = self.apply_schema(*states, **kwargs)
+        table = self.apply_table(*states, composed_schema=composed_schema, **kwargs)
+        couplings = self.apply_couplings(
+            *states, composed_schema=composed_schema, **kwargs
+        )
+        sources = self.combine_sources(*states, composed_schema=composed_schema)
+        source_manager = self.combine_source_managers(
+            *datasets, composed_schema=composed_schema
+        )
         return Dataset(
             state=DatasetState(
-                schema    = self.apply_schema(*states, **kwargs),
-                table     = self.apply_table(*states, **kwargs),
-                couplings = self.apply_couplings(*states, **kwargs),
-                sources   = self.combine_sources(*states),
+                schema    = resolve_merged_fields(composed_schema),
+                table     = table,
+                couplings = couplings,
+                sources   = sources,
             ),
-            source_manager=self.combine_source_managers(*datasets),
+            source_manager=source_manager,
         )
 
-    def combine_sources(self, *states: DatasetState) -> tuple[DatasetSourceInfo, ...]:
+    def combine_sources(
+        self,
+        *states: DatasetState,
+        composed_schema: Schema | None = None,
+    ) -> tuple[DatasetSourceInfo, ...]:
         seen: dict[str, DatasetSourceInfo] = {}
         for state in states:
             for src in state.sources:
                 seen[src.source_id or src.source_uri] = src
         return tuple(seen.values())
 
-    def combine_source_managers(self, *datasets: Dataset) -> SourceManager | None:
+    def combine_source_managers(
+        self,
+        *datasets: Dataset,
+        composed_schema: Schema | None = None,
+    ) -> SourceManager | None:
         return None
 
     @abstractmethod

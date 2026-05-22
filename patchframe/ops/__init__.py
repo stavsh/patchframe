@@ -32,22 +32,37 @@ from patchframe.ops.builtin.rename import rename
 from patchframe.ops.builtin.set_index import set_index
 from patchframe.ops.builtin.where import where
 from patchframe.ops.builtin.window_expansion_plan import window_expansion_plan
-from patchframe.ops.transitions import AspectTransition, TransitionPlan
+from patchframe.ops.transitions import (
+    AccessorsTransition,
+    Cardinality,
+    CouplingsTransition,
+    IndexIdentityTransition,
+    SchemaTransition,
+    SourcesTransition,
+    TableTransition,
+    TransitionPlan,
+)
 
 __all__ = [
     "MISSING",
-    "AspectTransition",
+    "AccessorsTransition",
+    "Cardinality",
     "CompositionOperator",
+    "CouplingsTransition",
     "CreationOperator",
     "DatasetOperator",
     "DimensionJoin",
     "FieldEqualityJoin",
+    "IndexIdentityTransition",
     "IndexJoin",
     "JoinStrategy",
     "Operator",
     "Parameter",
     "PlanConsumerMixin",
     "PlanOperator",
+    "SchemaTransition",
+    "SourcesTransition",
+    "TableTransition",
     "TransitionPlan",
     "add_column",
     "bind_dimensions",

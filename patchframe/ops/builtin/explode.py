@@ -19,19 +19,28 @@ from patchframe.dataset.schema import Schema
 from patchframe.dataset.state import DatasetState
 from patchframe.ops.base import Operator, PlanConsumerMixin
 from patchframe.ops.builtin._composition import normalize_field_names, normalize_table_to_schema
-from patchframe.ops.transitions import AspectTransition, TransitionPlan
+from patchframe.ops.transitions import (
+    Cardinality,
+    CouplingsTransition,
+    IndexIdentityTransition,
+    SchemaTransition,
+    SourcesTransition,
+    TableTransition,
+    TransitionPlan,
+)
 
 
 class explode(PlanConsumerMixin, Operator):
     """Apply a source-indexed row expansion plan to one dataset."""
 
     transitions = TransitionPlan(
-        schema=AspectTransition("derive"),
-        table=AspectTransition("derive"),
-        couplings=AspectTransition("preserve"),
-        sources=AspectTransition("inherit"),
-        index_identity=AspectTransition("inherit", {"input": "plan"}),
+        schema=SchemaTransition.construct(),
+        table=TableTransition.construct(),
+        couplings=CouplingsTransition.construct(),
+        sources=SourcesTransition.inherit(),
+        index_identity=IndexIdentityTransition.inherit(input="plan"),
     )
+    cardinality = Cardinality.EXPAND
 
     def __call__(
         self,

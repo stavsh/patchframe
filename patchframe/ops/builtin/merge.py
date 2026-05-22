@@ -24,7 +24,14 @@ from patchframe.ops.builtin._composition import (
     resolve_collision_column,
     union_couplings,
 )
-from patchframe.ops.transitions import AspectTransition, TransitionPlan
+from patchframe.ops.transitions import (
+    CouplingsTransition,
+    IndexIdentityTransition,
+    SchemaTransition,
+    SourcesTransition,
+    TableTransition,
+    TransitionPlan,
+)
 
 _LEFT_INDEX = "left_index"
 _RIGHT_INDEX = "right_index"
@@ -35,11 +42,11 @@ class merge(CompositionOperator):
     """Materialize two datasets according to an explicit join-plan dataset."""
 
     transitions = TransitionPlan(
-        schema=AspectTransition("derive"),
-        table=AspectTransition("derive"),
-        couplings=AspectTransition("derive"),
-        sources=AspectTransition("union"),
-        index_identity=AspectTransition("inherit", {"input": 2}),
+        schema=SchemaTransition.construct(),
+        table=TableTransition.construct(),
+        couplings=CouplingsTransition.union(),
+        sources=SourcesTransition.union(),
+        index_identity=IndexIdentityTransition.inherit(input=2),
     )
 
     def apply_schema(

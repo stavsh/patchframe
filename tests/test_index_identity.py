@@ -91,8 +91,8 @@ def test_concat_columns_mints_identity_for_different_index_namespaces():
 
 def test_index_identity_transition_declarations_are_specific():
     assert pf.PlanOperator.transitions.index_identity.mode == "mint"
-    assert pf.concat_rows.transitions.index_identity.mode == "row_stack"
-    assert pf.concat_columns.transitions.index_identity.mode == "align_rows"
+    assert pf.concat_rows.transitions.index_identity.mode == "coalesce"
+    assert pf.concat_columns.transitions.index_identity.mode == "coalesce"
     assert pf.join.transitions.index_identity.mode == "mint"
     assert pf.merge.transitions.index_identity.mode == "inherit"
 

@@ -6,11 +6,13 @@ from typing import Any
 
 import pandas as pd
 
-from patchframe.dataset.couplings import CouplingSet
+from patchframe.dataset.couplings import Coupling, CouplingSet
 from patchframe.dataset.dataset import Dataset
 from patchframe.dataset.field_composition import (
     ColumnCollisionStrategy,
     CompositionContext,
+    FieldParent,
+    MergedField,
     compose_column,
     compose_rows,
 )
@@ -24,26 +26,15 @@ from patchframe.dataset.schema import Schema
 from patchframe.dataset.state import DatasetState
 from patchframe.ops.base import CompositionOperator
 from patchframe.ops.builtin._composition import (
-    compose_collision_field,
     normalize_collision,
     normalize_table_to_schema,
     preserve_row_couplings,
     resolve_collision_column,
-    union_couplings,
 )
-from patchframe.ops.transitions import AspectTransition, TransitionPlan
 
 
 class concat_rows(CompositionOperator):
     """Stack datasets by rows."""
-
-    transitions = TransitionPlan(
-        schema=AspectTransition("derive"),
-        table=AspectTransition("derive"),
-        couplings=AspectTransition("derive"),
-        sources=AspectTransition("union"),
-        index_identity=AspectTransition("row_stack"),
-    )
 
     def apply_schema(self, *states: DatasetState, **_: Any) -> Schema:
         _require_states(states, self.name)
@@ -91,14 +82,6 @@ class concat_rows(CompositionOperator):
 class concat_columns(CompositionOperator):
     """Compose datasets by columns, aligning rows by pandas index."""
 
-    transitions = TransitionPlan(
-        schema=AspectTransition("derive"),
-        table=AspectTransition("derive"),
-        couplings=AspectTransition("derive"),
-        sources=AspectTransition("union"),
-        index_identity=AspectTransition("align_rows"),
-    )
-
     def apply_schema(
         self,
         *states: DatasetState,
@@ -107,29 +90,33 @@ class concat_columns(CompositionOperator):
     ) -> Schema:
         _require_states(states, self.name)
         strategy = normalize_collision(collision)
+        ctx = CompositionContext(role="column_add", op=self.name)
         output_fields: list[Field] = []
         positions: dict[str, int] = {}
-        for state in states:
+        first_parent: dict[str, FieldParent] = {}
+        for input_index, state in enumerate(states):
             for field in state.schema:
                 if field.name not in positions:
                     positions[field.name] = len(output_fields)
+                    first_parent[field.name] = FieldParent(input_index, field)
                     output_fields.append(
-                        compose_column(
-                            field,
-                            tuple(output_fields),
-                            CompositionContext(role="column_add", op=self.name),
-                        )
+                        compose_column(field, tuple(output_fields), ctx)
                     )
                     continue
 
-                index = positions[field.name]
-                existing = output_fields[index]
-                output_fields[index] = compose_collision_field(
-                    existing,
-                    field,
-                    tuple(f for i, f in enumerate(output_fields) if i != index),
-                    strategy,
-                    self.name,
+                # Same-name collision: replace the slot with a MergedField that
+                # carries the colliding parents. It is resolved only after every
+                # aspect hook has read the lineage.
+                slot = positions[field.name]
+                existing = output_fields[slot]
+                incoming = FieldParent(input_index, field)
+                parents = (
+                    existing.parents + (incoming,)
+                    if isinstance(existing, MergedField)
+                    else (first_parent[field.name], incoming)
+                )
+                output_fields[slot] = MergedField.over(
+                    parents, collision=strategy, context=ctx
                 )
         return _with_primary_identity(
             Schema(fields=tuple(output_fields)),
@@ -169,20 +156,30 @@ class concat_columns(CompositionOperator):
             CompositionContext(role="column_add", op=self.name),
         )
 
-    def apply_couplings(self, *states: DatasetState, **_: Any) -> CouplingSet:
-        return union_couplings(*(state.couplings for state in states))
+    def apply_couplings(
+        self,
+        *states: DatasetState,
+        composed_schema: Schema | None = None,
+        **_: Any,
+    ) -> CouplingSet:
+        # Auto-derive from the MergedField lineage: a coupling from an input
+        # that lost a collision and references the superseded name is dropped;
+        # the rest are unioned (deduplicated).
+        superseded = _superseded_names_by_input(composed_schema)
+        result: list[Coupling] = []
+        for input_index, state in enumerate(states):
+            lost = superseded.get(input_index, frozenset())
+            for coupling in state.couplings.couplings:
+                touched = (coupling.output_field(), *coupling.input_fields())
+                if lost and not lost.isdisjoint(touched):
+                    continue
+                if coupling not in result:
+                    result.append(coupling)
+        return CouplingSet(couplings=tuple(result))
 
 
 class concat(CompositionOperator):
     """Dispatch to ``concat_rows`` or ``concat_columns``."""
-
-    transitions = TransitionPlan(
-        schema=AspectTransition("dispatch"),
-        table=AspectTransition("dispatch"),
-        couplings=AspectTransition("dispatch"),
-        sources=AspectTransition("dispatch"),
-        index_identity=AspectTransition("dispatch"),
-    )
 
     def __call__(self, *datasets: Dataset, axis: int = 0, **kwargs: Any) -> Dataset:
         if axis == 0:
@@ -226,6 +223,21 @@ def _table_for_output_schema(state: DatasetState, schema: Schema) -> pd.DataFram
 def _require_states(states: tuple[DatasetState, ...], op_name: str) -> None:
     if not states:
         raise ValueError(f"{op_name} requires at least one dataset.")
+
+
+def _superseded_names_by_input(schema: Schema | None) -> dict[int, frozenset[str]]:
+    """Map each input index to the field names where that input lost a collision."""
+    if schema is None:
+        return {}
+    superseded: dict[int, set[str]] = {}
+    for field in schema:
+        if not isinstance(field, MergedField) or field.collision is None:
+            continue
+        winner = field.winning_parent().input_index
+        for parent in field.parents:
+            if parent.input_index != winner:
+                superseded.setdefault(parent.input_index, set()).add(field.name)
+    return {index: frozenset(names) for index, names in superseded.items()}
 
 
 def _row_stack_index_identity(states: tuple[DatasetState, ...]):

@@ -8,7 +8,7 @@ import pandas as pd
 
 from patchframe.dataset.state import DatasetState
 from patchframe.ops.base import DatasetOperator
-from patchframe.ops.transitions import AspectTransition, TransitionPlan
+from patchframe.ops.transitions import Cardinality, SchemaTransition, TransitionPlan
 
 
 class where(DatasetOperator):
@@ -23,7 +23,8 @@ class where(DatasetOperator):
     where.instance()(ds, mask)
     """
 
-    transitions = TransitionPlan(table=AspectTransition("derive"))
+    transitions = TransitionPlan(schema=SchemaTransition.preserve())
+    cardinality = Cardinality.FILTER
 
     def apply_table(
         self,

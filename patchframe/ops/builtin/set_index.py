@@ -6,22 +6,26 @@ from typing import Any
 
 import pandas as pd
 
-from patchframe.dataset.couplings import CouplingSet
 from patchframe.dataset.fields import IndexColumnField, IndexField
 from patchframe.dataset.schema import Schema
 from patchframe.dataset.state import DatasetState
 from patchframe.ops.base import DatasetOperator
-from patchframe.ops.transitions import AspectTransition, TransitionPlan
+from patchframe.ops.transitions import (
+    Cardinality,
+    IndexIdentityTransition,
+    SchemaTransition,
+    TransitionPlan,
+)
 
 
 class set_index(DatasetOperator):
     """Set a table column as the dataset index."""
 
     transitions = TransitionPlan(
-        schema=AspectTransition("derive"),
-        table=AspectTransition("derive"),
-        index_identity=AspectTransition("mint"),
+        schema=SchemaTransition.rewrite(),
+        index_identity=IndexIdentityTransition.mint(),
     )
+    cardinality = Cardinality.PRESERVE
 
     def apply_schema(
         self,
@@ -41,7 +45,14 @@ class set_index(DatasetOperator):
         output_fields = []
         for field_def in state.schema:
             if field_def.name == field:
-                output_fields.append(IndexField(name=target_name))
+                # Promoting a column to the index is a rewrite: the field's
+                # lineage identity carries through the representation change.
+                output_fields.append(
+                    IndexField(
+                        name=target_name,
+                        field_identity=field_def.field_identity,
+                    )
+                )
             elif field_def.primary and field_def.name != target_name:
                 index_identity = (
                     field_def.identity
@@ -55,6 +66,7 @@ class set_index(DatasetOperator):
                         nullable=True,
                         metadata=field_def.metadata,
                         index_identity=index_identity,
+                        field_identity=field_def.field_identity,
                     )
                 )
             else:
@@ -88,6 +100,3 @@ class set_index(DatasetOperator):
         df.index.name = target_name
         df = df.drop(columns=[field])
         return df
-
-    def apply_couplings(self, state: DatasetState, *_, **__: Any) -> CouplingSet:
-        return state.couplings

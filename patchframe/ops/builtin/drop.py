@@ -6,11 +6,10 @@ from typing import Any
 
 import pandas as pd
 
-from patchframe.dataset.couplings import CouplingSet
 from patchframe.dataset.schema import Schema
 from patchframe.dataset.state import DatasetState
 from patchframe.ops.base import DatasetOperator
-from patchframe.ops.transitions import AspectTransition, TransitionPlan
+from patchframe.ops.transitions import Cardinality, SchemaTransition, TransitionPlan
 
 
 class drop(DatasetOperator):
@@ -25,11 +24,8 @@ class drop(DatasetOperator):
     drop.instance()(ds, ["col1", "col2"])
     """
 
-    transitions = TransitionPlan(
-        schema=AspectTransition("derive"),
-        table=AspectTransition("derive"),
-        couplings=AspectTransition("derive"),
-    )
+    transitions = TransitionPlan(schema=SchemaTransition.narrow())
+    cardinality = Cardinality.PRESERVE
 
     def apply_schema(self, state: DatasetState, fields: list[str], **_: Any) -> Schema:
         unknown = [f for f in fields if not state.schema.has(f)]
@@ -42,7 +38,3 @@ class drop(DatasetOperator):
         if not col_drops:
             return state.table
         return state.table.drop(columns=col_drops)
-
-    def apply_couplings(self, state: DatasetState, fields: list[str], **_: Any) -> CouplingSet:
-        retained = set(state.schema.names()) - set(fields)
-        return state.couplings.retain(retained)

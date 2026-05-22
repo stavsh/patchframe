@@ -21,7 +21,7 @@ import numpy as np
 import pandas as pd
 
 from patchframe.data.dimensions import Dimension
-from patchframe.dataset.identity import IndexIdentity
+from patchframe.dataset.identity import FieldIdentity, IndexIdentity, new_field_identity
 
 # ---------------------------------------------------------------------------
 # Dtype conversion helpers
@@ -118,6 +118,10 @@ class Field:
         one primary field of each concrete Field type may exist in a Schema.
     metadata:
         Optional field-level metadata. Must not contain executable logic.
+    field_identity:
+        Stable semantic identity for this field across operator transitions.
+        Minted automatically at construction when not supplied; preserved by
+        ``dataclasses.replace``. Excluded from structural equality.
     """
 
     logical_type: ClassVar[str] = ""
@@ -127,10 +131,13 @@ class Field:
     nullable: bool = True
     primary: bool = False
     metadata: Mapping[str, Any] = field(default_factory=dict)
+    field_identity: FieldIdentity | None = field(default=None, compare=False)
 
     def __post_init__(self) -> None:
         if self.dtype is not None:
             object.__setattr__(self, "dtype", to_nullable_dtype(self.dtype))
+        if self.field_identity is None:
+            object.__setattr__(self, "field_identity", new_field_identity())
 
     def validate_column(self, series: pd.Series) -> None:
         """Raise if the series dtype is incompatible with this field's dtype."""

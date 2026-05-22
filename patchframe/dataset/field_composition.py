@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import Literal
+from typing import ClassVar, Literal
 
 import pandas as pd
 
@@ -14,7 +14,8 @@ from patchframe.dataset.fields import (
     IndexField,
     ValueField,
 )
-from patchframe.dataset.identity import new_index_identity
+from patchframe.dataset.identity import new_field_identity, new_index_identity
+from patchframe.dataset.schema import Schema
 
 CompositionRole = Literal["row_stack", "column_add", "key_coalesce", "collision"]
 CollisionMode = Literal["error", "keep", "update_missing", "coalesce", "rename"]
@@ -44,6 +45,118 @@ def _normal_field(field: Field) -> Field:
     if isinstance(field, IndexField) or field.nullable:
         return field
     return replace(field, nullable=True)
+
+
+@dataclass(frozen=True, slots=True)
+class FieldParent:
+    """One input field feeding a MergedField, tagged with its source input index."""
+
+    input_index: int
+    field: Field
+
+
+@dataclass(frozen=True, slots=True)
+class MergedField(Field):
+    """A field in flux during composition: a collision or unification of parents.
+
+    A MergedField is a first-rate ``Field`` while a composition operator runs,
+    so each ``apply_*`` hook can transform its aspect from this lineage. It is
+    resolved to one concrete field before the composition call returns and
+    never appears in a returned dataset's schema.
+
+    Its ``Field`` attributes mirror the field it resolves to, keeping a
+    MergedField-bearing schema coherent for generic field-reading code. Build
+    one through ``MergedField.over(...)`` so the mirror stays consistent.
+    """
+
+    logical_type: ClassVar[str] = "merged"
+
+    parents: tuple[FieldParent, ...] = ()
+    collision: ColumnCollisionStrategy | None = None
+    context: CompositionContext | None = None
+
+    @classmethod
+    def over(
+        cls,
+        parents: tuple[FieldParent, ...],
+        *,
+        collision: ColumnCollisionStrategy | None = None,
+        context: CompositionContext | None = None,
+    ) -> "MergedField":
+        """Build a MergedField over ``parents``, mirroring its resolved field."""
+        if not parents:
+            raise ValueError("MergedField requires at least one parent.")
+        resolved = _resolved_merged_field(parents, collision, context)
+        return cls(
+            name=resolved.name,
+            dtype=resolved.dtype,
+            nullable=resolved.nullable,
+            primary=resolved.primary,
+            metadata=resolved.metadata,
+            field_identity=resolved.field_identity,
+            parents=parents,
+            collision=collision,
+            context=context,
+        )
+
+    def resolve(self) -> Field:
+        """Collapse to the concrete field this MergedField represents."""
+        return _resolved_merged_field(self.parents, self.collision, self.context)
+
+    def winning_parent(self) -> FieldParent:
+        """The parent a column collision resolves to.
+
+        Defined only for column collisions; a row unification has no single
+        winning parent.
+        """
+        if self.collision is None:
+            raise ValueError(
+                "MergedField row unification has no single winning parent."
+            )
+        return self.parents[0] if self.collision.side == "left" else self.parents[-1]
+
+    def validate_column(self, series: pd.Series) -> None:
+        self.resolve().validate_column(series)
+
+
+def _resolved_merged_field(
+    parents: tuple[FieldParent, ...],
+    collision: "ColumnCollisionStrategy | None",
+    context: "CompositionContext | None",
+) -> Field:
+    fields = tuple(parent.field for parent in parents)
+    ctx = context or CompositionContext(role="column_add")
+    if collision is None:
+        # Row unification: preserve the field identity iff all parents agree.
+        field = compose_rows(fields, ctx)
+        if len({parent.field.field_identity for parent in parents}) > 1:
+            return replace(field, field_identity=new_field_identity())
+        return field
+    if collision.mode == "error":
+        raise ValueError(
+            f"{ctx.op or 'composition'}: field collision for {fields[0].name!r}."
+        )
+    if collision.mode == "rename":
+        raise ValueError("rename collisions must be prepared before composition.")
+    if collision.mode == "keep":
+        return fields[0] if collision.side == "left" else fields[-1]
+    # update_missing / coalesce: the merged values come from both sides, but the
+    # field keeps the chosen side's lineage identity.
+    chosen = fields[0] if collision.side == "left" else fields[-1]
+    field = compose_key(fields, ctx)
+    return replace(field, name=fields[0].name, field_identity=chosen.field_identity)
+
+
+def resolve_merged_fields(schema: Schema) -> Schema:
+    """Return ``schema`` with every MergedField collapsed to a concrete field."""
+    if not any(isinstance(field, MergedField) for field in schema):
+        return schema
+    return Schema(
+        fields=tuple(
+            field.resolve() if isinstance(field, MergedField) else field
+            for field in schema
+        )
+    )
 
 
 class FieldCompositionPolicy:

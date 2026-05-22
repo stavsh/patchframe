@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import pandas as pd
 
-from patchframe.dataset.couplings import CouplingSet
 from patchframe.dataset.schema import Schema
 from patchframe.dataset.state import DatasetState
 from patchframe.ops.base import DatasetOperator
-from patchframe.ops.transitions import AspectTransition, TransitionPlan
+from patchframe.ops.transitions import Cardinality, SchemaTransition, TransitionPlan
 
 
 class rename(DatasetOperator):
@@ -24,11 +23,11 @@ class rename(DatasetOperator):
     rename.instance()(ds, {"old": "new"})
     """
 
-    transitions = TransitionPlan(
-        schema    = AspectTransition("derive"),
-        table     = AspectTransition("derive"),
-        couplings = AspectTransition("derive"),
-    )
+    transitions = TransitionPlan(schema=SchemaTransition.rewrite())
+    cardinality = Cardinality.PRESERVE
+
+    def resolve_transitions(self, state, mapping, **_):
+        return self.transitions._with(schema=SchemaTransition.rewrite(mapping=mapping))
 
     def apply_schema(self, state: DatasetState, mapping: dict[str, str], **_) -> Schema:
         unknown = [k for k in mapping if not state.schema.has(k)]
@@ -39,6 +38,3 @@ class rename(DatasetOperator):
     def apply_table(self, state: DatasetState, mapping: dict[str, str], **_) -> pd.DataFrame:
         col_mapping = {k: v for k, v in mapping.items() if k in state.table.columns}
         return state.table.rename(columns=col_mapping)
-
-    def apply_couplings(self, state: DatasetState, mapping: dict[str, str], **_) -> CouplingSet:
-        return state.couplings.rewrite_field_names(mapping)

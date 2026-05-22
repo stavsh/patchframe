@@ -4,10 +4,15 @@ from __future__ import annotations
 
 from typing import Any
 
-from patchframe.dataset.couplings import BindSlice, CouplingSet, FieldRef
+from patchframe.dataset.couplings import BindSlice, FieldRef
 from patchframe.dataset.state import DatasetState
 from patchframe.ops.base import DatasetOperator
-from patchframe.ops.transitions import AspectTransition, TransitionPlan
+from patchframe.ops.transitions import (
+    Cardinality,
+    SchemaTransition,
+    TableTransition,
+    TransitionPlan,
+)
 
 
 class bind_slice(DatasetOperator):
@@ -24,15 +29,19 @@ class bind_slice(DatasetOperator):
         Name of the existing DataField (input + output, sliced in place).
     """
 
-    transitions = TransitionPlan(couplings=AspectTransition("derive"))
+    transitions = TransitionPlan(
+        schema=SchemaTransition.preserve(),
+        table=TableTransition.preserve(),
+    )
+    cardinality = Cardinality.PRESERVE
 
-    def apply_couplings(
+    def new_couplings(
         self,
         state: DatasetState,
         slice_field: str,
         data_field: str,
         **_: Any,
-    ) -> CouplingSet:
-        return state.couplings.add(
-            BindSlice(slice_field=FieldRef(slice_field), data_field=FieldRef(data_field))
+    ) -> tuple[BindSlice, ...]:
+        return (
+            BindSlice(slice_field=FieldRef(slice_field), data_field=FieldRef(data_field)),
         )

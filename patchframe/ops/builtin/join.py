@@ -16,7 +16,14 @@ from patchframe.dataset.schema import Schema
 from patchframe.dataset.state import DatasetState
 from patchframe.ops.base import CompositionOperator
 from patchframe.ops.builtin._composition import normalize_field_names
-from patchframe.ops.transitions import AspectTransition, TransitionPlan
+from patchframe.ops.transitions import (
+    CouplingsTransition,
+    IndexIdentityTransition,
+    SchemaTransition,
+    SourcesTransition,
+    TableTransition,
+    TransitionPlan,
+)
 
 JoinHow = Literal["inner", "left", "right", "outer"]
 _JOIN_HOWS: set[str] = {"inner", "left", "right", "outer"}
@@ -66,11 +73,11 @@ class join(CompositionOperator):
     """Build a join-plan dataset mapping rows from two input datasets."""
 
     transitions = TransitionPlan(
-        schema=AspectTransition("derive"),
-        table=AspectTransition("derive"),
-        couplings=AspectTransition("derive"),
-        sources=AspectTransition("union"),
-        index_identity=AspectTransition("mint"),
+        schema=SchemaTransition.construct(),
+        table=TableTransition.construct(),
+        couplings=CouplingsTransition.clear(),
+        sources=SourcesTransition.union(),
+        index_identity=IndexIdentityTransition.mint(),
     )
 
     def __call__(

@@ -6,7 +6,7 @@ from typing import Any
 
 import pandas as pd
 
-from patchframe.dataset.couplings import Coupling, CouplingSet
+from patchframe.dataset.couplings import Coupling
 from patchframe.dataset.field_composition import (
     CompositionContext,
     compose_column,
@@ -16,7 +16,7 @@ from patchframe.dataset.fields import Field
 from patchframe.dataset.schema import Schema
 from patchframe.dataset.state import DatasetState
 from patchframe.ops.base import DatasetOperator
-from patchframe.ops.transitions import AspectTransition, TransitionPlan
+from patchframe.ops.transitions import Cardinality, SchemaTransition, TransitionPlan
 
 
 class add_column(DatasetOperator):
@@ -34,11 +34,8 @@ class add_column(DatasetOperator):
         Optional Coupling instances to add alongside the new column.
     """
 
-    transitions = TransitionPlan(
-        schema    = AspectTransition("derive"),
-        table     = AspectTransition("derive"),
-        couplings = AspectTransition("derive"),
-    )
+    transitions = TransitionPlan(schema=SchemaTransition.extend())
+    cardinality = Cardinality.PRESERVE
 
     def apply_schema(
         self,
@@ -73,7 +70,7 @@ class add_column(DatasetOperator):
         )
         return df
 
-    def apply_couplings(
+    def new_couplings(
         self,
         state: DatasetState,
         field_def: Field,
@@ -81,8 +78,8 @@ class add_column(DatasetOperator):
         *,
         couplings: tuple[Coupling, ...] = (),
         **_: Any,
-    ) -> CouplingSet:
-        return state.couplings.add(*couplings)
+    ) -> tuple[Coupling, ...]:
+        return tuple(couplings)
 
     def _compose_field(self, state: DatasetState, field_def: Field) -> Field:
         return compose_column(

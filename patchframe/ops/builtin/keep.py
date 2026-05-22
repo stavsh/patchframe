@@ -6,11 +6,10 @@ from typing import Any
 
 import pandas as pd
 
-from patchframe.dataset.couplings import CouplingSet
 from patchframe.dataset.schema import Schema
 from patchframe.dataset.state import DatasetState
 from patchframe.ops.base import DatasetOperator
-from patchframe.ops.transitions import AspectTransition, TransitionPlan
+from patchframe.ops.transitions import Cardinality, SchemaTransition, TransitionPlan
 
 
 class keep(DatasetOperator):
@@ -25,11 +24,8 @@ class keep(DatasetOperator):
     keep.instance()(ds, ["item_id", "data"])
     """
 
-    transitions = TransitionPlan(
-        schema=AspectTransition("derive"),
-        table=AspectTransition("derive"),
-        couplings=AspectTransition("derive"),
-    )
+    transitions = TransitionPlan(schema=SchemaTransition.narrow())
+    cardinality = Cardinality.PRESERVE
 
     def apply_schema(self, state: DatasetState, fields: list[str], **_: Any) -> Schema:
         unknown = [f for f in fields if not state.schema.has(f)]
@@ -42,6 +38,3 @@ class keep(DatasetOperator):
         kept_set = set(fields)
         keep_cols = [c for c in state.table.columns if c in kept_set]
         return state.table[keep_cols] if keep_cols else state.table[[]]
-
-    def apply_couplings(self, state: DatasetState, fields: list[str], **_: Any) -> CouplingSet:
-        return state.couplings.retain(set(fields))
