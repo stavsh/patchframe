@@ -250,9 +250,10 @@ class DatasetOperator(Operator):
         if mode in ("union", "construct"):
             return self.apply_couplings(state, *args, **kwargs)
 
-        # mode == "derive": derive surviving couplings from the schema
-        # transition, then append any operator-declared new couplings.
-        derived = self._derive_couplings(state, output_schema, transitions.schema)
+        # mode == "derive": framework derives surviving couplings from
+        # input/output FieldIdentity lineage, then appends any operator-declared
+        # new couplings.
+        derived = self._derive_couplings(state, output_schema)
         new = self.new_couplings(state, *args, **kwargs)
         if not new:
             return derived
@@ -264,22 +265,30 @@ class DatasetOperator(Operator):
         self,
         state: DatasetState,
         output_schema: Schema,
-        schema_transition: SchemaTransition,
     ) -> CouplingSet:
-        """Derive surviving couplings from the declared schema transition."""
+        """Derive surviving couplings from input/output FieldIdentity lineage.
+
+        Compare input and output schemas by ``field_identity``: a field whose
+        identity reappears in the output under a different name was renamed;
+        one whose identity is absent was dropped; others are preserved. Mode-
+        agnostic — the same logic handles preserve / extend / narrow / rewrite
+        / infer / construct.
+        """
         couplings = state.couplings
         if not couplings.couplings:
             return couplings
 
-        mode = schema_transition.mode
-        if mode in ("preserve", "extend"):
-            return couplings
-        if mode == "rewrite" and schema_transition.mapping:
-            return couplings.rewrite_field_names(dict(schema_transition.mapping))
+        output_by_identity = {
+            field.field_identity: field.name for field in output_schema
+        }
+        rename: dict[str, str] = {}
+        for input_field in state.schema:
+            output_name = output_by_identity.get(input_field.field_identity)
+            if output_name is not None and output_name != input_field.name:
+                rename[input_field.name] = output_name
+        if rename:
+            couplings = couplings.rewrite_field_names(rename)
 
-        # narrow / infer / construct / rewrite-without-mapping: conservatively
-        # retain couplings whose referenced fields all survive in the output
-        # schema, dropping the rest with a warning.
         surviving = set(output_schema.names())
         retained = couplings.retain(surviving)
         dropped = len(couplings.couplings) - len(retained.couplings)

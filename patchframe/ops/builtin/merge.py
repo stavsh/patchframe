@@ -10,6 +10,8 @@ from patchframe.dataset.couplings import CouplingSet
 from patchframe.dataset.field_composition import (
     ColumnCollisionStrategy,
     CompositionContext,
+    FieldParent,
+    MergedField,
     compose_column,
 )
 from patchframe.dataset.fields import Field, ForeignIndexField, IndexField
@@ -18,11 +20,9 @@ from patchframe.dataset.schema import Schema
 from patchframe.dataset.state import DatasetState
 from patchframe.ops.base import CompositionOperator
 from patchframe.ops.builtin._composition import (
-    compose_collision_field,
+    derive_composed_couplings,
     normalize_collision,
     normalize_table_to_schema,
-    resolve_collision_column,
-    union_couplings,
 )
 from patchframe.ops.transitions import (
     CouplingsTransition,
@@ -63,29 +63,34 @@ class merge(CompositionOperator):
         _validate_reserved_input_names(right, "right", self.name)
 
         strategy = normalize_collision(collision)
-        output_fields = list(join_plan.schema.fields)
+        ctx = CompositionContext(role="column_add", op=self.name)
+        output_fields: list[Field] = list(join_plan.schema.fields)
         positions = {field.name: index for index, field in enumerate(output_fields)}
+        first_parent: dict[str, FieldParent] = {
+            field.name: FieldParent(2, field) for field in output_fields
+        }
 
-        for state in (left, right):
+        for input_index, state in ((0, left), (1, right)):
             for field in _table_fields(state):
                 if field.name not in positions:
                     positions[field.name] = len(output_fields)
+                    first_parent[field.name] = FieldParent(input_index, field)
                     output_fields.append(
-                        compose_column(
-                            field,
-                            tuple(output_fields),
-                            CompositionContext(role="column_add", op=self.name),
-                        )
+                        compose_column(field, tuple(output_fields), ctx)
                     )
                     continue
 
-                index = positions[field.name]
-                output_fields[index] = compose_collision_field(
-                    output_fields[index],
-                    field,
-                    tuple(f for i, f in enumerate(output_fields) if i != index),
-                    strategy,
-                    self.name,
+                # Same-name collision: replace the slot with a MergedField.
+                slot = positions[field.name]
+                existing = output_fields[slot]
+                incoming = FieldParent(input_index, field)
+                parents = (
+                    existing.parents + (incoming,)
+                    if isinstance(existing, MergedField)
+                    else (first_parent[field.name], incoming)
+                )
+                output_fields[slot] = MergedField.over(
+                    parents, collision=strategy, context=ctx
                 )
 
         return Schema(fields=tuple(output_fields))
@@ -94,6 +99,7 @@ class merge(CompositionOperator):
         self,
         *states: DatasetState,
         collision: ColumnCollisionStrategy | str | None = None,
+        composed_schema: Schema | None = None,
         **_: Any,
     ) -> pd.DataFrame:
         left, right, join_plan = _require_merge_states(states, self.name)
@@ -103,8 +109,11 @@ class merge(CompositionOperator):
         _validate_mapping_labels(left, join_plan.table[_LEFT_INDEX], "left", self.name)
         _validate_mapping_labels(right, join_plan.table[_RIGHT_INDEX], "right", self.name)
 
-        strategy = normalize_collision(collision)
-        schema = self.apply_schema(*states, collision=strategy)
+        schema = (
+            composed_schema
+            if composed_schema is not None
+            else self.apply_schema(*states, collision=collision)
+        )
         result = join_plan.table.copy()
 
         for incoming in (
@@ -115,13 +124,11 @@ class merge(CompositionOperator):
                 if name not in result.columns:
                     result[name] = incoming[name]
                     continue
-                result[name] = resolve_collision_column(
-                    name,
-                    result[name],
-                    incoming[name],
-                    strategy,
-                    self.name,
-                )
+                # A table-column collision implies a MergedField in the schema;
+                # the MergedField owns how the colliding columns resolve.
+                merged = schema.get(name)
+                assert isinstance(merged, MergedField)
+                result[name] = merged.resolve_column([result[name], incoming[name]])
 
         column_names = tuple(field.name for field in schema if field.logical_type != "index")
         result = result.loc[:, column_names]
@@ -131,9 +138,14 @@ class merge(CompositionOperator):
             CompositionContext(role="column_add", op=self.name),
         )
 
-    def apply_couplings(self, *states: DatasetState, **_: Any) -> CouplingSet:
+    def apply_couplings(
+        self,
+        *states: DatasetState,
+        composed_schema: Schema | None = None,
+        **_: Any,
+    ) -> CouplingSet:
         _require_merge_states(states, self.name)
-        return union_couplings(*(state.couplings for state in states))
+        return derive_composed_couplings(states, composed_schema)
 
 
 def _require_merge_states(

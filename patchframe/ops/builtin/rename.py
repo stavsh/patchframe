@@ -26,9 +26,6 @@ class rename(DatasetOperator):
     transitions = TransitionPlan(schema=SchemaTransition.rewrite())
     cardinality = Cardinality.PRESERVE
 
-    def resolve_transitions(self, state, mapping, **_):
-        return self.transitions._with(schema=SchemaTransition.rewrite(mapping=mapping))
-
     def apply_schema(self, state: DatasetState, mapping: dict[str, str], **_) -> Schema:
         unknown = [k for k in mapping if not state.schema.has(k)]
         if unknown:

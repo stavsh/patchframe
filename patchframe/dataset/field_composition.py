@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from typing import ClassVar, Literal
 
@@ -99,9 +100,26 @@ class MergedField(Field):
             context=context,
         )
 
-    def resolve(self) -> Field:
-        """Collapse to the concrete field this MergedField represents."""
+    def resolve_field(self) -> Field:
+        """Collapse to the concrete schema field this MergedField represents."""
         return _resolved_merged_field(self.parents, self.collision, self.context)
+
+    def resolve_column(self, parent_columns: Sequence[pd.Series]) -> pd.Series:
+        """Resolve the table column for this collision from the parent columns.
+
+        Columns are given in ``parents`` order. For a column collision the
+        strategy is folded over them (``keep`` keeps the winning side,
+        ``update_missing``/``coalesce`` merge); a row unification stacks them.
+        """
+        columns = list(parent_columns)
+        if not columns:
+            raise ValueError("resolve_column requires at least one parent column.")
+        if self.collision is None:
+            return pd.concat(columns)
+        result = columns[0]
+        for column in columns[1:]:
+            result = resolve_column_collision(result, column, self.collision)
+        return result
 
     def winning_parent(self) -> FieldParent:
         """The parent a column collision resolves to.
@@ -116,7 +134,7 @@ class MergedField(Field):
         return self.parents[0] if self.collision.side == "left" else self.parents[-1]
 
     def validate_column(self, series: pd.Series) -> None:
-        self.resolve().validate_column(series)
+        self.resolve_field().validate_column(series)
 
 
 def _resolved_merged_field(
@@ -153,7 +171,7 @@ def resolve_merged_fields(schema: Schema) -> Schema:
         return schema
     return Schema(
         fields=tuple(
-            field.resolve() if isinstance(field, MergedField) else field
+            field.resolve_field() if isinstance(field, MergedField) else field
             for field in schema
         )
     )

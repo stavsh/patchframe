@@ -75,3 +75,13 @@ def test_set_index_preserves_field_lineage_through_rewrite():
     assert result.schema.get("value").field_identity == value_identity
     # the downgraded index column keeps its field identity too
     assert result.schema.get("item_id").field_identity == index_identity
+
+
+def test_rename_rewrites_couplings_via_identity():
+    # B3: identity-based derivation auto-rewrites coupling refs after rename;
+    # no `resolve_transitions` mapping injection is required.
+    ds = pf.bind_materialize(_dataset(["a", "b"], values=[1, 2]), "value")
+    result = pf.rename(ds, {"value": "v"})
+
+    coupling = result.couplings.couplings[0]
+    assert coupling.field.name == "v"

@@ -218,14 +218,13 @@ collapse to four:
 - `construct`: the operator builds the coupling set itself (`apply_couplings`).
 - `clear`: the output intentionally has no couplings.
 
-Under `derive`, given the schema transition:
-
-- `schema` preserve / extend -> all couplings are kept.
-- `schema` rewrite with a name mapping -> coupling field refs are rewritten
-  through the mapping.
-- `schema` narrow / infer / construct / rewrite-without-mapping -> couplings
-  whose referenced fields all survive in the output schema are retained; the
-  rest are dropped with a warning.
+Under `derive`, the framework compares input and output schemas by
+`FieldIdentity`: a field whose identity reappears in the output under a
+different name was renamed (coupling refs are rewritten through that map); a
+field whose identity is absent from the output was dropped (couplings
+referencing it are pruned with a warning); others are preserved. This is
+mode-agnostic — the same logic handles preserve, extend, narrow, rewrite,
+infer, and construct.
 
 `append` is not a declared mode. An operator that adds couplings declares
 `derive` and overrides `new_couplings`; the framework appends the returned

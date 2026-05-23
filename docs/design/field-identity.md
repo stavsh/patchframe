@@ -125,18 +125,37 @@ would feel unnatural to users who expect `concat(a, b)` to just work.
 
 ### The mechanism
 
-`MergedField` is a thin, transient wrapper produced during composition when
-fields collide. It holds:
+`MergedField` is a first-rate `Field` subclass produced during composition
+when fields share a name. It holds:
 
-- references to the 2+ parent `Field`s,
-- the collision strategy,
+- `parents: tuple[FieldParent, ...]` — ordered `(input_index, field)` pairs so
+  both coupling work and table work can identify which input each parent came
+  from.
+- the collision strategy (`None` for a row unification).
 - the composition context.
 
-It lives only inside `_compose`. It travels through `apply_schema` →
-`apply_couplings`, carrying the distinguishable parents so coupling derivation
-can ask it, per parent, "does your resolution keep this parent's couplings?"
-Just before the final `DatasetState` is assembled, it **resolves** to a
-concrete field.
+It rides in the intermediate schema returned by `apply_schema` and is consumed
+by every aspect hook that `_compose` orchestrates. `MergedField` owns the
+collision resolution itself through two methods over the same
+parents/strategy:
+
+- `resolve_field() -> Field` — the schema-side answer (used by
+  `resolve_merged_fields` at the end of `_compose`).
+- `resolve_column(parent_columns) -> pd.Series` — the table-side answer
+  (called by `apply_table` with the parent columns gathered by
+  `input_index`).
+
+Because both methods read the same lineage and the same `winning_parent()`,
+schema winner and table winner cannot diverge — the collision decision is made
+once. `apply_couplings` auto-derives: for each `MergedField`, the losing
+input's couplings on the superseded name are pruned (shared helper
+`derive_composed_couplings` in `ops/builtin/_composition.py`). `concat_rows`
+is the carve-out — its couplings stay preserved by field name.
+
+`MergedField` complements `FieldIdentity`; it does not replace it. Identity
+makes the parents distinguishable (`left.label` ≠ `right.label` despite the
+shared name); `MergedField` carries those distinguishable parents through the
+apply pipeline.
 
 This is deliberately lighter than persistent lineage edges
 (`FieldIdentity.derived_from`). Coupling derivation needs lineage only *during*
@@ -145,35 +164,32 @@ and couplings are settled. `MergedField` scopes the lineage to exactly that
 window — transient scaffolding, not permanent infrastructure that accumulates
 and must be serialized.
 
-`MergedField` complements `FieldIdentity`; it does not replace it. Identity
-makes the parents distinguishable (`left.label` ≠ `right.label` despite the
-shared name); `MergedField` carries those distinguishable parents through the
-apply pipeline.
-
 ### Design points
 
-1. **Field-duck-typed.** `MergedField` subclasses `Field` and proxies attribute
-   reads (`.name`, `.dtype`, `.logical_type`) to its default-resolved parent,
-   so most of the apply pipeline does not special-case it. Only
-   collision-aware code (`apply_couplings`, the resolver) inspects it.
-2. **It must never escape.** Because it subclasses `Field`, it could survive
-   into a returned `DatasetState` and pass schema validation. Enforce an
-   invariant: a final schema must contain no `MergedField`. Assert in
-   `_compose` (or schema validation).
-3. **Flat N-ary parents.** Three-way `concat` produces `MergedField(a, b, c)`,
-   not nested wrappers.
-4. **Resolution agrees with table-column resolution.** The strategy that picks
-   the winning *field* must be the same one `resolve_collision_column` uses for
-   the winning *column values*. Schema winner and table winner cannot diverge.
-5. **Resolution timing.** In `_compose`, after `apply_schema` and
-   `apply_couplings`, before final state assembly. Composition's `apply_schema`
-   therefore returns an *intermediate* schema that may contain `MergedField`s —
-   a real but contained contract change.
+1. **First-rate `Field` subclass, not a proxy.** `MergedField` mirrors the
+   would-be-resolved field's attributes (`name`, `dtype`, `nullable`,
+   `primary`) so generic field-reading code (`Schema` validation,
+   `normalize_column`, etc.) treats it like any other field. Build through
+   `MergedField.over(parents, collision=..., context=...)` so the mirror stays
+   consistent with `resolve_field()`.
+2. **`_compose` resolves before assembly.** `apply_schema` returns the
+   intermediate (possibly MergedField-bearing) schema; every aspect hook reads
+   it; `resolve_merged_fields` collapses it just before the final
+   `DatasetState`. No MergedField appears in a returned dataset's schema.
+3. **Flat N-ary parents.** A three-way collision produces
+   `MergedField(parents=(p0, p1, p2), ...)`, not nested wrappers.
+4. **One decision, two answers.** `resolve_field` and `resolve_column` read the
+   same `parents`/`collision`/`context` and the same `winning_parent()`, so
+   schema winner and table winner are consistent by construction.
+5. **No bucket info on `MergedField`.** Bucket policy (primary-field downgrade
+   across same-type fields) is orthogonal to collision (same-name fields). It
+   stays in `compose_column` for non-colliding fields; a resolved MergedField
+   produces an ordinary field that goes through the same bucket check as every
+   other output field.
 6. **Sensible default resolution.** `MergedField` accepts a strategy but
    defaults to first/left-wins, so `concat(a, b)` works with no strategy
-   argument and `collision=...` stays optional (already true of
-   `concat_columns` today). This is what keeps the `concat` signature natural
-   without a `FieldIdentityLineage` mechanism.
+   argument and `collision=...` stays optional. This is what keeps the
+   `concat` signature natural without a `FieldIdentityLineage` mechanism.
 
 ### Rejected alternative
 
@@ -259,14 +275,28 @@ expand its responsibility.
   `Field.__post_init__`; `set_index` threads identity through its rewrite;
   other unary operators propagate via `replace`/passthrough. Tests in
   `tests/test_field_identity.py`. No behavior change to coupling derivation.
-- **B2 — MergedField.** The composition-collision carrier and composition's
-  field-identity rules (row-stack preserve-or-mint). Not yet started.
-- **B3 — wire identity into derivation.** Make `_derive_couplings` use
-  identity-based lineage and `schema=infer` reliable; drop `rename`'s
-  `resolve_transitions` mapping injection. Deferred until B1/B2 are stable.
+- **B2 — MergedField (shipped).** `MergedField` as a first-rate `Field`
+  subclass with `resolve_field` / `resolve_column` / `winning_parent`;
+  `FieldParent` (input-indexed parents); `CompositionOperator._compose`
+  threads the intermediate schema to every aspect hook and resolves last;
+  `concat_columns`, `merge`, and `concat_rows` all produce `MergedField`s
+  (collision for the first two, row unification for the last);
+  `apply_couplings` auto-derives via the shared `derive_composed_couplings`
+  helper (`concat_rows` keeps `preserve_row_couplings` as the name-based
+  carve-out). Composition's previous helpers `compose_collision_field` /
+  `resolve_collision_column` / `union_couplings` were removed as dead code.
+  Tests in `tests/test_merged_field.py`.
+- **B3 — wire identity into derivation (shipped).** `_derive_couplings` is
+  identity-based and mode-agnostic: it compares input/output schemas by
+  `field_identity` to derive the rename map and the surviving set, replacing
+  the declared `rewrite(mapping=...)` mechanism for unary operators.
+  `schema=infer` is now operationally as precise as any other mode for
+  coupling work. `rename`'s `resolve_transitions` mapping injection was
+  removed; the `mapping` field on `SchemaTransition` was removed as dead
+  state. Tests in `tests/test_field_identity.py`.
 
-The stages compose without wasted work: Stage A's `rewrite(mapping=...)` is the
-manual version of what B3 later automates.
+The stages compose without wasted work: Stage A's `rewrite(mapping=...)` was
+the manual version of what B3 later automated.
 
 ## Open questions
 

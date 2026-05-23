@@ -31,7 +31,7 @@ def test_transition_factories_produce_expected_modes():
     assert SchemaTransition.narrow().mode == "narrow"
     assert SchemaTransition.construct().mode == "construct"
     assert SchemaTransition.infer().mode == "infer"
-    assert SchemaTransition.rewrite(mapping={"a": "b"}).mapping == {"a": "b"}
+    assert SchemaTransition.rewrite().mode == "rewrite"
     assert TableTransition.construct().mode == "construct"
     assert CouplingsTransition.clear().mode == "clear"
     assert SourcesTransition.union().mode == "union"
@@ -53,9 +53,8 @@ def test_transition_rejects_unknown_mode():
 
 def test_transition_plan_with_replaces_aspects():
     plan = TransitionPlan()
-    refined = plan._with(schema=SchemaTransition.rewrite(mapping={"x": "y"}))
+    refined = plan._with(schema=SchemaTransition.rewrite())
     assert refined.schema.mode == "rewrite"
-    assert refined.schema.mapping == {"x": "y"}
     # the original plan is unchanged
     assert plan.schema.mode == "infer"
     # untouched aspects carry over
@@ -66,13 +65,6 @@ def test_transition_plan_with_replaces_aspects():
 def test_resolve_transitions_default_returns_class_plan():
     op = pf.where.instance()
     assert op.resolve_transitions() is op.transitions
-
-
-def test_rename_resolve_transitions_injects_mapping():
-    op = pf.rename.instance()
-    resolved = op.resolve_transitions(None, {"old": "new"})
-    assert resolved.schema.mode == "rewrite"
-    assert resolved.schema.mapping == {"old": "new"}
 
 
 def test_operator_cardinality_declarations():

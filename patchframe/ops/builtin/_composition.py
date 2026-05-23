@@ -3,21 +3,18 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import replace
 
 import pandas as pd
 
-from patchframe.dataset.couplings import CouplingSet
+from patchframe.dataset.couplings import Coupling, CouplingSet
 from patchframe.dataset.field_composition import (
     ColumnCollisionStrategy,
     CompositionContext,
-    compose_column,
-    compose_key,
+    MergedField,
     normalize_column,
-    resolve_column_collision,
 )
-from patchframe.dataset.fields import Field
 from patchframe.dataset.schema import Schema
+from patchframe.dataset.state import DatasetState
 
 
 def normalize_collision(
@@ -48,58 +45,6 @@ def normalize_table_to_schema(
     return result
 
 
-def compose_collision_field(
-    existing: Field,
-    incoming: Field,
-    other_fields: tuple[Field, ...],
-    strategy: ColumnCollisionStrategy,
-    op_name: str,
-) -> Field:
-    if strategy.mode == "error":
-        raise ValueError(f"{op_name}: field collision for {incoming.name!r}.")
-    if strategy.mode == "rename":
-        raise ValueError(f"{op_name}: rename collisions must be prepared before composition.")
-    if strategy.mode == "keep":
-        chosen = existing if strategy.side == "left" else incoming
-        return compose_column(
-            chosen,
-            other_fields,
-            CompositionContext(role="column_add", op=op_name),
-        )
-
-    field = compose_key(
-        (existing, incoming),
-        CompositionContext(role="key_coalesce", op=op_name),
-    )
-    return compose_column(
-        replace(field, name=existing.name),
-        other_fields,
-        CompositionContext(role="column_add", op=op_name),
-    )
-
-
-def resolve_collision_column(
-    name: str,
-    existing: pd.Series,
-    incoming: pd.Series,
-    strategy: ColumnCollisionStrategy,
-    op_name: str,
-) -> pd.Series:
-    try:
-        return resolve_column_collision(existing, incoming, strategy)
-    except ValueError as err:
-        raise ValueError(f"{op_name}: column collision for {name!r}: {err}") from err
-
-
-def union_couplings(*coupling_sets: CouplingSet) -> CouplingSet:
-    couplings = []
-    for coupling_set in coupling_sets:
-        for coupling in coupling_set.couplings:
-            if coupling not in couplings:
-                couplings.append(coupling)
-    return CouplingSet(couplings=tuple(couplings))
-
-
 def preserve_row_couplings(*coupling_sets: CouplingSet, op_name: str) -> CouplingSet:
     if not coupling_sets:
         return CouplingSet()
@@ -115,3 +60,40 @@ def preserve_row_couplings(*coupling_sets: CouplingSet, op_name: str) -> Couplin
         )
 
     return CouplingSet()
+
+
+def superseded_names_by_input(schema: Schema | None) -> dict[int, frozenset[str]]:
+    """Map each input index to the field names where that input lost a collision."""
+    if schema is None:
+        return {}
+    superseded: dict[int, set[str]] = {}
+    for field in schema:
+        if not isinstance(field, MergedField) or field.collision is None:
+            continue
+        winner = field.winning_parent().input_index
+        for parent in field.parents:
+            if parent.input_index != winner:
+                superseded.setdefault(parent.input_index, set()).add(field.name)
+    return {index: frozenset(names) for index, names in superseded.items()}
+
+
+def derive_composed_couplings(
+    states: tuple[DatasetState, ...],
+    composed_schema: Schema | None,
+) -> CouplingSet:
+    """Union input couplings, dropping those an input lost to a collision.
+
+    A coupling from an input that lost a name collision and references the
+    superseded name is pruned; the rest are unioned (deduplicated).
+    """
+    superseded = superseded_names_by_input(composed_schema)
+    result: list[Coupling] = []
+    for input_index, state in enumerate(states):
+        lost = superseded.get(input_index, frozenset())
+        for coupling in state.couplings.couplings:
+            touched = (coupling.output_field(), *coupling.input_fields())
+            if lost and not lost.isdisjoint(touched):
+                continue
+            if coupling not in result:
+                result.append(coupling)
+    return CouplingSet(couplings=tuple(result))

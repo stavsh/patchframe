@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from enum import Enum
-from typing import Any, Literal, Mapping
+from typing import Any, Literal
 
 
 class Cardinality(Enum):
@@ -50,16 +50,16 @@ class SchemaTransition:
     - ``extend``    : input fields survive unchanged; new fields may be added.
     - ``narrow``    : some fields may be removed; survivors keep their identity.
     - ``rewrite``   : field identities survive but representation changes
-      (rename/retype). ``mapping`` carries old->new names when a rename occurs.
+      (rename/retype). The rename mapping is derived structurally from
+      ``FieldIdentity`` lineage; no explicit declaration needed.
     - ``construct`` : output schema is newly assembled.
     - ``infer``     : the operator changes the schema but does not characterize
-      how. Placeholder mode — treated conservatively (see coupling derivation
-      in ``ops.base``). Real inference arrives with the FieldIdentity stage.
+      how. ``_derive_couplings`` compares input/output by ``FieldIdentity`` so
+      this mode is operationally as precise as any other for coupling work.
     """
 
     mode: SchemaMode = "infer"
     input: int = 0
-    mapping: Mapping[str, str] | None = None
 
     _MODES = frozenset({"preserve", "extend", "narrow", "rewrite", "construct", "infer"})
 
@@ -80,10 +80,8 @@ class SchemaTransition:
         return cls(mode="narrow", input=input)
 
     @classmethod
-    def rewrite(
-        cls, *, mapping: Mapping[str, str] | None = None, input: int = 0
-    ) -> "SchemaTransition":
-        return cls(mode="rewrite", input=input, mapping=mapping)
+    def rewrite(cls, *, input: int = 0) -> "SchemaTransition":
+        return cls(mode="rewrite", input=input)
 
     @classmethod
     def construct(cls) -> "SchemaTransition":
