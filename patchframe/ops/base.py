@@ -26,7 +26,6 @@ from patchframe.data.manager import SourceManager, get_default_manager
 from patchframe.data.source import DataSource
 from patchframe.dataset.couplings import Coupling, CouplingSet
 from patchframe.dataset.dataset import Dataset
-from patchframe.dataset.field_composition import resolve_merged_fields
 from patchframe.dataset.fields import ForeignIndexField, IndexField
 from patchframe.dataset.identity import (
     mint_primary_index_identity,
@@ -37,6 +36,7 @@ from patchframe.dataset.identity import (
 from patchframe.dataset.provenance import DatasetSourceInfo
 from patchframe.dataset.schema import Schema
 from patchframe.dataset.state import DatasetState
+from patchframe.ops.dispatch import compute_output_state
 from patchframe.ops.transitions import (
     Cardinality,
     CouplingsTransition,
@@ -179,35 +179,12 @@ class DatasetOperator(Operator):
         return self._apply(dataset, *args, **kwargs)
 
     def _apply(self, dataset: Dataset, *args: Any, **kwargs: Any) -> Dataset:
-        s = dataset.state
-        t = self.resolve_transitions(s, *args, **kwargs)
-
-        schema = (
-            s.schema
-            if t.schema.mode == "preserve"
-            else self.apply_schema(s, *args, **kwargs)
-        )
-        schema = self.apply_index_identity(s, schema, t.index_identity, *args, **kwargs)
-
-        table = (
-            s.table
-            if t.table.mode == "preserve"
-            else self.apply_table(s, *args, **kwargs)
-        )
-
-        couplings = self._resolve_couplings(s, t, schema, *args, **kwargs)
-
-        sources = (
-            s.sources
-            if t.sources.mode == "inherit"
-            else self.apply_sources(s, *args, **kwargs)
-        )
-
+        new_state = compute_output_state(self, (dataset.state,), args, kwargs)
         result = dataset.replace_state(
-            schema=schema,
-            table=table,
-            couplings=couplings,
-            sources=sources,
+            schema=new_state.schema,
+            table=new_state.table,
+            couplings=new_state.couplings,
+            sources=new_state.sources,
         )
         self._validate_output(result)
         return result
@@ -560,10 +537,10 @@ class CompositionOperator(Operator):
     """
 
     transitions: ClassVar[TransitionPlan] = TransitionPlan(
-        schema=SchemaTransition.construct(),
+        schema=SchemaTransition.compose(),
         table=TableTransition.construct(),
-        couplings=CouplingsTransition.union(),
-        sources=SourcesTransition.union(),
+        couplings=CouplingsTransition.derive(),
+        sources=SourcesTransition.derive(),
         index_identity=IndexIdentityTransition.coalesce(),
     )
 
@@ -572,26 +549,12 @@ class CompositionOperator(Operator):
 
     def _compose(self, *datasets: Dataset, **kwargs: Any) -> Dataset:
         states = tuple(d.state for d in datasets)
-        # apply_schema may return an intermediate schema carrying MergedFields.
-        # Every aspect hook receives that intermediate so it can transform its
-        # aspect from the collision lineage; MergedFields are resolved only
-        # after all hooks have run.
-        composed_schema = self.apply_schema(*states, **kwargs)
-        table = self.apply_table(*states, composed_schema=composed_schema, **kwargs)
-        couplings = self.apply_couplings(
-            *states, composed_schema=composed_schema, **kwargs
-        )
-        sources = self.combine_sources(*states, composed_schema=composed_schema)
+        new_state = compute_output_state(self, states, (), kwargs)
         source_manager = self.combine_source_managers(
-            *datasets, composed_schema=composed_schema
+            *datasets, composed_schema=new_state.schema
         )
         return Dataset(
-            state=DatasetState(
-                schema    = resolve_merged_fields(composed_schema),
-                table     = table,
-                couplings = couplings,
-                sources   = sources,
-            ),
+            state=new_state,
             source_manager=source_manager,
         )
 
@@ -599,6 +562,7 @@ class CompositionOperator(Operator):
         self,
         *states: DatasetState,
         composed_schema: Schema | None = None,
+        **_: Any,
     ) -> tuple[DatasetSourceInfo, ...]:
         seen: dict[str, DatasetSourceInfo] = {}
         for state in states:

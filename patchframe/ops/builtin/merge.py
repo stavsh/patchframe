@@ -42,10 +42,10 @@ class merge(CompositionOperator):
     """Materialize two datasets according to an explicit join-plan dataset."""
 
     transitions = TransitionPlan(
-        schema=SchemaTransition.construct(),
+        schema=SchemaTransition.compose(),
         table=TableTransition.construct(),
-        couplings=CouplingsTransition.union(),
-        sources=SourcesTransition.union(),
+        couplings=CouplingsTransition.derive(),
+        sources=SourcesTransition.derive(),
         index_identity=IndexIdentityTransition.inherit(input=2),
     )
 

@@ -3,13 +3,12 @@
 Status: internal design rationale. Not a public API spec. Records the model
 for `FieldIdentity` and the `MergedField` composition-lineage mechanism. This
 is the stage *after* the AspectTransition tightening (see
-`aspect-transition-plan.md`); it is not required for that stage to ship.
+`aspect-transition.md`); it is not required for that stage to ship.
 
 Cross-references:
 
-- `aspect-transition-plan.md` — Stage A; ships with declared
-  `schema=rewrite(mapping=...)` as the interim lineage mechanism.
-- `aspect-transition-ontology.md` — transition vocabulary.
+- `aspect-transition.md` — transition vocabulary and the mechanisms that
+  consume it.
 - `design-constraints.md` §1 — identity must be serializable and stable
   across save/load.
 
@@ -93,7 +92,7 @@ structural — compare output field identities against input field identities:
 Consequences:
 
 - **`schema=infer` becomes reliable.** The caveat accepted in
-  `aspect-transition-plan.md` — "infer cannot detect renames" — disappears.
+  `aspect-transition.md` — "infer cannot detect renames" — disappears.
 - **`schema=rewrite(mapping=...)` declarations become unnecessary.** `rename`
   and `set_index` stop hand-declaring the mapping; the framework reads it from
   identities. The `rewrite` mode stays in the vocabulary; only its hand-written

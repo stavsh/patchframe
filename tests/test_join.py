@@ -6,6 +6,7 @@ import pandas as pd
 import pytest
 
 from patchframe.dataset.fields import IndexField, ValueField
+from patchframe.dataset.provenance import DatasetSourceInfo
 from patchframe.dataset.schema import Schema
 from patchframe.ops.builtin.join import DimensionJoin, FieldEqualityJoin, join
 from patchframe.ops.builtin.make_from_dataframe import make_from_dataframe
@@ -85,6 +86,31 @@ class TestIndexJoin:
         assert result.table["right_index"].isna().tolist() == [True, False, False]
         assert result.table["left_index"].iloc[:2].tolist() == ["a", "b"]
         assert result.table["right_index"].iloc[1:].tolist() == ["b", "c"]
+
+    def test_combines_input_sources(self):
+        schema = Schema(fields=(IndexField(name="item_id"), ValueField(name="x", dtype=int)))
+        left = make_from_dataframe(
+            pd.DataFrame({"x": [1]}, index=["a"]),
+            schema,
+            source_info=DatasetSourceInfo(
+                source_id="left",
+                source_uri="memory://left",
+                source_type="dataframe",
+            ),
+        )
+        right = make_from_dataframe(
+            pd.DataFrame({"x": [2]}, index=["a"]),
+            schema,
+            source_info=DatasetSourceInfo(
+                source_id="right",
+                source_uri="memory://right",
+                source_type="dataframe",
+            ),
+        )
+
+        result = join(left, right)
+
+        assert tuple(source.source_id for source in result.sources) == ("left", "right")
 
 
 class TestFieldEqualityJoin:

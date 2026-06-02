@@ -1,5 +1,7 @@
 """Tests for the operator transition vocabulary and resolution."""
 
+import warnings
+
 import pytest
 
 import patchframe as pf
@@ -25,19 +27,53 @@ def test_transition_plan_defaults_are_worst_case():
     assert plan.accessors.mode == "preserve"
 
 
+def test_transition_plan_defaults_emit_no_warnings():
+    """Bare ``TransitionPlan()`` must not emit deprecation warnings even though
+    its default schema/identity modes are deprecated factories.
+
+    The class-level defaults still use the deprecated modes for Phase 1
+    compatibility, so the dataclass field defaults route through the
+    constructor (which does not warn) rather than the deprecated factory
+    classmethods (which do).
+    """
+    with warnings.catch_warnings(record=True) as record:
+        warnings.simplefilter("always")
+        TransitionPlan()
+    assert [w for w in record if issubclass(w.category, DeprecationWarning)] == []
+
+
 def test_transition_factories_produce_expected_modes():
     assert SchemaTransition.preserve().mode == "preserve"
     assert SchemaTransition.extend().mode == "extend"
     assert SchemaTransition.narrow().mode == "narrow"
-    assert SchemaTransition.construct().mode == "construct"
-    assert SchemaTransition.infer().mode == "infer"
     assert SchemaTransition.rewrite().mode == "rewrite"
+    assert SchemaTransition.compose().mode == "compose"
+    assert SchemaTransition.construct().mode == "construct"
+    assert SchemaTransition.custom().mode == "custom"
+    assert TableTransition.preserve().mode == "preserve"
+    assert TableTransition.mutate().mode == "mutate"
     assert TableTransition.construct().mode == "construct"
+    assert CouplingsTransition.derive().mode == "derive"
+    assert CouplingsTransition.inherit(input=2).input == 2
+    assert CouplingsTransition.inherit(input=2).mode == "inherit"
+    assert CouplingsTransition.homogeneous().mode == "homogeneous"
+    assert CouplingsTransition.construct().mode == "construct"
     assert CouplingsTransition.clear().mode == "clear"
-    assert SourcesTransition.union().mode == "union"
+    assert CouplingsTransition.custom().mode == "custom"
+    assert SourcesTransition.inherit().mode == "inherit"
+    assert SourcesTransition.derive().mode == "derive"
+    assert SourcesTransition.compose().mode == "compose"
+    assert SourcesTransition.construct().mode == "construct"
+    assert SourcesTransition.clear().mode == "clear"
+    assert SourcesTransition.custom().mode == "custom"
     assert IndexIdentityTransition.inherit(input="plan").input == "plan"
     assert IndexIdentityTransition.inherit(input=2).input == 2
+    assert IndexIdentityTransition.mint().mode == "mint"
+    assert IndexIdentityTransition.coalesce().mode == "coalesce"
+    assert IndexIdentityTransition.derive().mode == "derive"
+    assert IndexIdentityTransition.custom().mode == "custom"
     assert AccessorsTransition.preserve().mode == "preserve"
+    assert AccessorsTransition.mutate().mode == "mutate"
 
 
 def test_transition_rejects_unknown_mode():
@@ -49,6 +85,35 @@ def test_transition_rejects_unknown_mode():
     with pytest.raises(ValueError):
         # 'preserve' is no longer a couplings mode
         CouplingsTransition(mode="preserve")
+    with pytest.raises(ValueError):
+        # 'union' has been removed from couplings modes
+        CouplingsTransition(mode="union")
+    with pytest.raises(ValueError):
+        # 'union' has been removed from sources modes
+        SourcesTransition(mode="union")
+
+
+def test_schema_infer_emits_deprecation_warning():
+    with pytest.warns(DeprecationWarning, match="SchemaTransition.infer"):
+        transition = SchemaTransition.infer()
+    assert transition.mode == "infer"
+
+
+def test_index_identity_preserve_emits_deprecation_warning():
+    with pytest.warns(DeprecationWarning, match="IndexIdentityTransition.preserve"):
+        transition = IndexIdentityTransition.preserve(input=1)
+    assert transition.mode == "preserve"
+    assert transition.input == 1
+
+
+def test_couplings_union_raises_with_migration_guidance():
+    with pytest.raises(ValueError, match="derive\\(\\).*homogeneous\\(\\)"):
+        CouplingsTransition.union()
+
+
+def test_sources_union_raises_with_migration_guidance():
+    with pytest.raises(ValueError, match="derive\\(\\)"):
+        SourcesTransition.union()
 
 
 def test_transition_plan_with_replaces_aspects():
@@ -84,4 +149,6 @@ def test_operator_transition_declarations():
     assert pf.bind_dimensions.transitions.schema.mode == "extend"
     assert pf.set_index.transitions.index_identity.mode == "mint"
     assert pf.join.transitions.couplings.mode == "clear"
-    assert pf.merge.transitions.couplings.mode == "union"
+    assert pf.join.transitions.sources.mode == "compose"
+    assert pf.merge.transitions.couplings.mode == "derive"
+    assert pf.merge.transitions.sources.mode == "derive"

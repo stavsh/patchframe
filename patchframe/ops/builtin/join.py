@@ -76,7 +76,7 @@ class join(CompositionOperator):
         schema=SchemaTransition.construct(),
         table=TableTransition.construct(),
         couplings=CouplingsTransition.clear(),
-        sources=SourcesTransition.union(),
+        sources=SourcesTransition.compose(),
         index_identity=IndexIdentityTransition.mint(),
     )
 

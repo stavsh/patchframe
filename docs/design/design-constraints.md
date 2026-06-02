@@ -9,7 +9,7 @@ known future direction.
 
 Cross-references:
 
-- `aspect-transition-ontology.md` — transition vocabulary and operator
+- `aspect-transition.md` — transition vocabulary and operator
   contract testing.
 - `lazy-and-bundle.md` — lazy/greedy duality, Bundle substrate, staged
   commitment plan.
@@ -54,7 +54,7 @@ violating it is explicit.
   declaration is the contract that operator tests, cache invalidation, and
   dispatch consume.
 - **Phase out `AspectTransition("derive")`** in favor of explicit, mechanically
-  checkable modes. See `aspect-transition-ontology.md`.
+  checkable modes. See `aspect-transition.md`.
 - **Operators must declare cardinality contract**
   (`preserve` / `filter` / `expand` / `unknown`) and **per-row independence**
   as adjacent capabilities. These define chunk-locality for lazy dispatch and

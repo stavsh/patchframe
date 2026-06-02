@@ -102,7 +102,7 @@ Three places where near-term work has load-bearing implications:
 
 ### Transition ontology
 
-`docs/design/aspect-transition-ontology.md` keeps table transitions deliberately
+`docs/design/aspect-transition.md` keeps table transitions deliberately
 coarse and treats cardinality as an adjacent operator capability. Lazy dispatch
 should consume two properties beyond the existing identity aspects:
 

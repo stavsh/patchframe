@@ -30,10 +30,28 @@ from patchframe.ops.builtin._composition import (
     normalize_table_to_schema,
     preserve_row_couplings,
 )
+from patchframe.ops.transitions import (
+    Cardinality,
+    CouplingsTransition,
+    IndexIdentityTransition,
+    SchemaTransition,
+    SourcesTransition,
+    TableTransition,
+    TransitionPlan,
+)
 
 
 class concat_rows(CompositionOperator):
     """Stack datasets by rows."""
+
+    transitions = TransitionPlan(
+        schema=SchemaTransition.compose(),
+        table=TableTransition.construct(),
+        couplings=CouplingsTransition.homogeneous(),
+        sources=SourcesTransition.derive(),
+        index_identity=IndexIdentityTransition.coalesce(),
+    )
+    cardinality = Cardinality.EXPAND
 
     def apply_schema(self, *states: DatasetState, **_: Any) -> Schema:
         _require_states(states, self.name)
@@ -93,6 +111,8 @@ class concat_rows(CompositionOperator):
 
 class concat_columns(CompositionOperator):
     """Compose datasets by columns, aligning rows by pandas index."""
+
+    cardinality = Cardinality.PRESERVE
 
     def apply_schema(
         self,

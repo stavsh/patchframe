@@ -15,6 +15,7 @@ modes. Construct them through the classmethod factories
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any, Literal
@@ -34,11 +35,17 @@ class Cardinality(Enum):
     UNKNOWN = "unknown"     # no local cardinality guarantee
 
 
-SchemaMode = Literal["preserve", "extend", "narrow", "rewrite", "construct", "infer"]
+SchemaMode = Literal[
+    "preserve", "extend", "narrow", "rewrite", "compose", "construct", "custom", "infer"
+]
 TableMode = Literal["preserve", "mutate", "construct"]
-CouplingsMode = Literal["derive", "union", "construct", "clear"]
-SourcesMode = Literal["inherit", "union", "construct", "clear"]
-IndexIdentityMode = Literal["preserve", "inherit", "mint", "coalesce"]
+CouplingsMode = Literal[
+    "derive", "inherit", "homogeneous", "construct", "clear", "custom"
+]
+SourcesMode = Literal["inherit", "derive", "compose", "construct", "clear", "custom"]
+IndexIdentityMode = Literal[
+    "preserve", "inherit", "mint", "coalesce", "derive", "custom"
+]
 AccessorsMode = Literal["preserve", "mutate"]
 
 
@@ -52,16 +59,24 @@ class SchemaTransition:
     - ``rewrite``   : field identities survive but representation changes
       (rename/retype). The rename mapping is derived structurally from
       ``FieldIdentity`` lineage; no explicit declaration needed.
-    - ``construct`` : output schema is newly assembled.
-    - ``infer``     : the operator changes the schema but does not characterize
-      how. ``_derive_couplings`` compares input/output by ``FieldIdentity`` so
-      this mode is operationally as precise as any other for coupling work.
+    - ``compose``   : N-ary composition through ``MergedField`` parents.
+      Same-name fields with shared ``FieldIdentity`` keep it; divergent
+      identities are unified under a freshly minted identity.
+    - ``construct`` : output schema is newly assembled with no input lineage.
+    - ``custom``    : input lineage exists but the operator's transformation
+      is not one the structural vocabulary captures. Total escape hatch; the
+      contract suite warns and asserts nothing about schema.
+    - ``infer``     : deprecated. Use ``preserve`` if the schema does not
+      change, or the appropriate structural mode otherwise.
     """
 
     mode: SchemaMode = "infer"
     input: int = 0
 
-    _MODES = frozenset({"preserve", "extend", "narrow", "rewrite", "construct", "infer"})
+    _MODES = frozenset({
+        "preserve", "extend", "narrow", "rewrite", "compose", "construct",
+        "custom", "infer",
+    })
 
     def __post_init__(self) -> None:
         if self.mode not in self._MODES:
@@ -84,11 +99,26 @@ class SchemaTransition:
         return cls(mode="rewrite", input=input)
 
     @classmethod
+    def compose(cls) -> "SchemaTransition":
+        return cls(mode="compose")
+
+    @classmethod
     def construct(cls) -> "SchemaTransition":
         return cls(mode="construct")
 
     @classmethod
+    def custom(cls) -> "SchemaTransition":
+        return cls(mode="custom")
+
+    @classmethod
     def infer(cls, *, input: int = 0) -> "SchemaTransition":
+        warnings.warn(
+            "SchemaTransition.infer is deprecated. Use preserve() when the "
+            "schema does not change, or one of extend / narrow / rewrite / "
+            "compose / construct / custom for the operator's actual effect.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         return cls(mode="infer", input=input)
 
 
@@ -128,19 +158,37 @@ class TableTransition:
 class CouplingsTransition:
     """Declared couplings-aspect effect of an operator.
 
-    - ``derive``    : the framework computes output couplings from the schema
-      transition (default). Preserve/extend keep couplings; rewrite-with-mapping
-      rewrites refs; narrow/infer/construct conservatively retain couplings
-      whose fields survive.
-    - ``union``     : couplings from multiple inputs are combined (composition).
-    - ``construct`` : the operator builds the coupling set itself.
-    - ``clear``     : the output intentionally has no couplings.
+    - ``derive``      : the framework computes output couplings from the
+      schema transition (default). Under preserve/extend keeps couplings;
+      under rewrite rewrites refs via identity lineage; under compose runs
+      MergedField-aware pruning.
+    - ``inherit``     : output couplings equal a selected input's couplings.
+      ``input`` may be an int position.
+    - ``homogeneous`` : output couplings equal the inputs' couplings iff all
+      input ``CouplingSet``s are structurally equal; raise otherwise.
+      Canonical use is row-stacking, where a coupling applying to only some
+      of the input rows would be unsafe to propagate silently.
+    - ``construct``   : the operator builds the coupling set itself.
+    - ``clear``       : the output intentionally has no couplings.
+    - ``custom``      : lineage exists but the operator opts out. Suite warns.
+
+    ``rename_map``, ``dropped``, and ``superseded_per_input`` are populated
+    by ``resolve_derived_transitions`` for ``derive`` aspects from input/
+    output schema lineage. They are empty on freshly declared transitions
+    and on non-``derive`` modes. The dispatch layer reads them to rewrite,
+    prune, and supersede input couplings; the contract suite reads them to
+    verify the framework's lineage analysis against the operator's output.
     """
 
     mode: CouplingsMode = "derive"
     input: int = 0
+    rename_map: tuple[tuple[str, str], ...] = ()
+    dropped: tuple[str, ...] = ()
+    superseded_per_input: tuple[tuple[int, tuple[str, ...]], ...] = ()
 
-    _MODES = frozenset({"derive", "union", "construct", "clear"})
+    _MODES = frozenset({
+        "derive", "inherit", "homogeneous", "construct", "clear", "custom",
+    })
 
     def __post_init__(self) -> None:
         if self.mode not in self._MODES:
@@ -151,8 +199,12 @@ class CouplingsTransition:
         return cls(mode="derive", input=input)
 
     @classmethod
-    def union(cls) -> "CouplingsTransition":
-        return cls(mode="union")
+    def inherit(cls, *, input: int = 0) -> "CouplingsTransition":
+        return cls(mode="inherit", input=input)
+
+    @classmethod
+    def homogeneous(cls) -> "CouplingsTransition":
+        return cls(mode="homogeneous")
 
     @classmethod
     def construct(cls) -> "CouplingsTransition":
@@ -162,21 +214,42 @@ class CouplingsTransition:
     def clear(cls) -> "CouplingsTransition":
         return cls(mode="clear")
 
+    @classmethod
+    def custom(cls) -> "CouplingsTransition":
+        return cls(mode="custom")
+
+    @classmethod
+    def union(cls) -> "CouplingsTransition":
+        raise ValueError(
+            "CouplingsTransition.union has been removed. It meant two "
+            "different things: use derive() for the compose-derive use case "
+            "(MergedField-aware pruning union under compose schema), or "
+            "homogeneous() for the row-stack use case (require all inputs to "
+            "agree before propagating)."
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class SourcesTransition:
     """Declared sources-aspect effect of an operator.
 
-    - ``inherit``   : use one input's source records (default for unary ops).
-    - ``union``     : combine source records from multiple inputs (composition).
-    - ``construct`` : a creation/source-producing operator mints source records.
+    - ``inherit``   : use a selected input's source records.
+    - ``derive``    : framework resolves from the schema transition; under
+      compose it is a deduped union of input sources.
+    - ``compose``   : combine source records from multiple inputs. Use when
+      source lineage composes independently of schema lineage.
+    - ``construct`` : a creation/source-producing operator mints source
+      records.
     - ``clear``     : the output intentionally has no source records.
+    - ``custom``    : operator opts out. Suite warns.
     """
 
     mode: SourcesMode = "inherit"
     input: int = 0
 
-    _MODES = frozenset({"inherit", "union", "construct", "clear"})
+    _MODES = frozenset({
+        "inherit", "derive", "compose", "construct", "clear", "custom",
+    })
 
     def __post_init__(self) -> None:
         if self.mode not in self._MODES:
@@ -187,8 +260,12 @@ class SourcesTransition:
         return cls(mode="inherit", input=input)
 
     @classmethod
-    def union(cls) -> "SourcesTransition":
-        return cls(mode="union")
+    def derive(cls) -> "SourcesTransition":
+        return cls(mode="derive")
+
+    @classmethod
+    def compose(cls) -> "SourcesTransition":
+        return cls(mode="compose")
 
     @classmethod
     def construct(cls) -> "SourcesTransition":
@@ -198,22 +275,39 @@ class SourcesTransition:
     def clear(cls) -> "SourcesTransition":
         return cls(mode="clear")
 
+    @classmethod
+    def custom(cls) -> "SourcesTransition":
+        return cls(mode="custom")
+
+    @classmethod
+    def union(cls) -> "SourcesTransition":
+        raise ValueError(
+            "SourcesTransition.union has been removed. Use derive() when "
+            "source behavior follows schema lineage, or compose() when source "
+            "records combine independently of schema lineage."
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class IndexIdentityTransition:
     """Declared primary index-identity effect of an operator.
 
-    - ``preserve`` : output rows keep the selected input identity namespace.
-    - ``inherit``  : output identity is selected from a named non-primary input
-      (e.g. a plan dataset). ``input`` may be an int position or a string label.
+    - ``inherit``  : output identity equals a selected input's identity.
+      ``input`` may be an int position or a string label.
     - ``mint``     : output rows enter a newly minted identity namespace.
     - ``coalesce`` : preserve when all inputs share one namespace, else mint.
+    - ``derive``   : framework resolves from the schema transition.
+    - ``custom``   : operator opts out. Suite warns.
+    - ``preserve`` : deprecated. Use ``inherit`` — a single name for a single
+      operation.
     """
 
     mode: IndexIdentityMode = "preserve"
     input: int | str = 0
 
-    _MODES = frozenset({"preserve", "inherit", "mint", "coalesce"})
+    _MODES = frozenset({
+        "preserve", "inherit", "mint", "coalesce", "derive", "custom",
+    })
 
     def __post_init__(self) -> None:
         if self.mode not in self._MODES:
@@ -221,6 +315,12 @@ class IndexIdentityTransition:
 
     @classmethod
     def preserve(cls, *, input: int | str = 0) -> "IndexIdentityTransition":
+        warnings.warn(
+            "IndexIdentityTransition.preserve is deprecated. Use "
+            "inherit(input=N) — a single name for a single operation.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         return cls(mode="preserve", input=input)
 
     @classmethod
@@ -234,6 +334,14 @@ class IndexIdentityTransition:
     @classmethod
     def coalesce(cls) -> "IndexIdentityTransition":
         return cls(mode="coalesce")
+
+    @classmethod
+    def derive(cls) -> "IndexIdentityTransition":
+        return cls(mode="derive")
+
+    @classmethod
+    def custom(cls) -> "IndexIdentityTransition":
+        return cls(mode="custom")
 
 
 @dataclass(frozen=True, slots=True)
@@ -265,18 +373,25 @@ class AccessorsTransition:
 class TransitionPlan:
     """Declared transitions of an operator across dataset aspects.
 
-    Defaults are worst-case-safe: an operator that declares nothing is assumed
-    to change the schema (``infer``), rebuild the table (``mutate``), and derive
-    its couplings from the schema transition. Operators narrow these to precise
-    modes as part of their declaration.
+    Phase 1 keeps the current defaults (``infer``/``mutate``/``derive``/
+    ``inherit``/``preserve``/``preserve``) so operators that rely on the bare
+    default continue to behave as before. The doc-stated new defaults
+    (``preserve``/``preserve``/``derive``/``derive``/``derive``/``preserve``)
+    land in Phase 6 alongside the operator redeclaration pass, when every
+    built-in operator declares its aspects explicitly.
+
+    Default factories deliberately use the class constructor (e.g.
+    ``SchemaTransition`` rather than ``SchemaTransition.infer``) for the
+    deprecated default modes so bare ``TransitionPlan()`` construction does
+    not emit deprecation warnings.
     """
 
-    schema: SchemaTransition = field(default_factory=SchemaTransition.infer)
+    schema: SchemaTransition = field(default_factory=SchemaTransition)
     table: TableTransition = field(default_factory=TableTransition.mutate)
     couplings: CouplingsTransition = field(default_factory=CouplingsTransition.derive)
     sources: SourcesTransition = field(default_factory=SourcesTransition.inherit)
     index_identity: IndexIdentityTransition = field(
-        default_factory=IndexIdentityTransition.preserve
+        default_factory=IndexIdentityTransition
     )
     accessors: AccessorsTransition = field(default_factory=AccessorsTransition.preserve)
 

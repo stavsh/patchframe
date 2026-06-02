@@ -32,6 +32,8 @@ from patchframe.ops.builtin.rename import rename
 from patchframe.ops.builtin.set_index import set_index
 from patchframe.ops.builtin.where import where
 from patchframe.ops.builtin.window_expansion_plan import window_expansion_plan
+from patchframe.ops.dispatch import register_aspect_handler
+from patchframe.ops.resolution import resolve_derived_transitions
 from patchframe.ops.transitions import (
     AccessorsTransition,
     Cardinality,
@@ -79,6 +81,8 @@ __all__ = [
     "make_from_dataframe",
     "merge",
     "rename",
+    "register_aspect_handler",
+    "resolve_derived_transitions",
     "set_index",
     "where",
     "window_expansion_plan",
