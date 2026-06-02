@@ -8,9 +8,10 @@ from typing import Any, Literal
 
 import pandas as pd
 
+from patchframe.data.dimensioned_slice import DimensionedSlice
 from patchframe.dataset.couplings import CouplingSet
 from patchframe.dataset.field_composition import CompositionContext, compose_key
-from patchframe.dataset.fields import ForeignIndexField, IndexField
+from patchframe.dataset.fields import DimensionedSliceField, ForeignIndexField, IndexField
 from patchframe.dataset.identity import primary_index_field
 from patchframe.dataset.schema import Schema
 from patchframe.dataset.state import DatasetState
@@ -58,15 +59,24 @@ class FieldEqualityJoin(JoinStrategy):
 
 @dataclass(frozen=True, slots=True)
 class DimensionJoin(JoinStrategy):
-    """Reserved strategy for dimension-aware joins."""
+    """Join bounded dimensional slices by interval overlap.
 
-    dimensions: str | Iterable[str] | None = None
+    ``left_field`` and ``right_field`` name ``DimensionedSliceField`` columns.
+    ``dimensions`` selects the slice dimensions that must all overlap. ``on``
+    optionally scopes candidate pairs by same-name equality fields before
+    interval matching, which is useful for tile-local pixel coordinates.
+    """
+
+    left_field: str = ""
+    right_field: str = ""
+    dimensions: str | Iterable[str] = ()
+    on: str | Iterable[str] = ()
     predicates: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         JoinStrategy.__post_init__(self)
-        if self.dimensions is not None:
-            object.__setattr__(self, "dimensions", normalize_field_names(self.dimensions))
+        object.__setattr__(self, "dimensions", normalize_field_names(self.dimensions))
+        object.__setattr__(self, "on", normalize_field_names(self.on))
 
 
 class join(CompositionOperator):
@@ -113,7 +123,7 @@ class join(CompositionOperator):
         if isinstance(strategy, FieldEqualityJoin):
             return _field_equality_join_table(left, right, strategy)
         if isinstance(strategy, DimensionJoin):
-            raise NotImplementedError("DimensionJoin requires dimension-scope join support.")
+            return _dimension_join_table(left, right, strategy)
         raise TypeError(f"Unsupported join strategy: {type(strategy).__name__}.")
 
     def apply_couplings(self, *states: DatasetState, **_: Any) -> CouplingSet:
@@ -220,6 +230,50 @@ def _field_equality_join_table(
     )
 
 
+def _dimension_join_table(
+    left: DatasetState,
+    right: DatasetState,
+    strategy: DimensionJoin,
+) -> pd.DataFrame:
+    right_by_scope: dict[tuple[Any, ...], list[tuple[Any, DimensionedSlice]]] = {}
+    for label, row in right.table.iterrows():
+        scope = _scope_key(row, strategy.on)
+        right_by_scope.setdefault(scope, []).append((label, row[strategy.right_field]))
+
+    matches_by_left: dict[Any, list[Any]] = {}
+    matches_by_right: dict[Any, list[Any]] = {}
+    for left_label, row in left.table.iterrows():
+        left_slice = row[strategy.left_field]
+        for right_label, right_slice in right_by_scope.get(_scope_key(row, strategy.on), []):
+            if not _slices_overlap(left_slice, right_slice, strategy.dimensions):
+                continue
+            matches_by_left.setdefault(left_label, []).append(right_label)
+            matches_by_right.setdefault(right_label, []).append(left_label)
+
+    pairs: list[tuple[Any, Any]] = []
+    if strategy.how in {"inner", "left", "outer"}:
+        for left_label in left.table.index:
+            matches = matches_by_left.get(left_label, ())
+            if matches:
+                pairs.extend((left_label, right_label) for right_label in matches)
+            elif strategy.how in {"left", "outer"}:
+                pairs.append((left_label, pd.NA))
+
+    if strategy.how == "right":
+        for right_label in right.table.index:
+            matches = matches_by_right.get(right_label, ())
+            if matches:
+                pairs.extend((left_label, right_label) for left_label in matches)
+            else:
+                pairs.append((pd.NA, right_label))
+    elif strategy.how == "outer":
+        for right_label in right.table.index:
+            if right_label not in matches_by_right:
+                pairs.append((pd.NA, right_label))
+
+    return _join_table_from_pairs(pairs)
+
+
 def _join_table_from_pairs(pairs: Iterable[tuple[Any, Any]]) -> pd.DataFrame:
     pair_list = list(pairs)
     return pd.DataFrame(
@@ -270,7 +324,8 @@ def _validate_strategy(
         _validate_field_equality_strategy(left, right, strategy, op_name)
         return
     if isinstance(strategy, DimensionJoin):
-        raise NotImplementedError("DimensionJoin requires dimension-scope join support.")
+        _validate_dimension_strategy(left, right, strategy, op_name)
+        return
     raise TypeError(f"Unsupported join strategy: {type(strategy).__name__}.")
 
 
@@ -304,6 +359,140 @@ def _validate_field_equality_strategy(
             (left.schema.get(name), right.schema.get(name)),
             CompositionContext(role="key_coalesce", op=op_name),
         )
+
+
+def _validate_dimension_strategy(
+    left: DatasetState,
+    right: DatasetState,
+    strategy: DimensionJoin,
+    op_name: str,
+) -> None:
+    if not strategy.left_field or not strategy.right_field:
+        raise ValueError(f"{op_name}: DimensionJoin requires left_field and right_field.")
+    if not strategy.dimensions:
+        raise ValueError(f"{op_name}: DimensionJoin requires at least one dimension.")
+
+    for state, field_name, side in (
+        (left, strategy.left_field, "left"),
+        (right, strategy.right_field, "right"),
+    ):
+        if not state.schema.has(field_name) or field_name not in state.table.columns:
+            raise ValueError(
+                f"{op_name}: DimensionJoin {side} field {field_name!r} is not present."
+            )
+        if not isinstance(state.schema.get(field_name), DimensionedSliceField):
+            raise TypeError(
+                f"{op_name}: DimensionJoin {side} field {field_name!r} "
+                "must be a DimensionedSliceField."
+            )
+        for value in state.table[field_name]:
+            _validate_dimension_slice(value, strategy.dimensions, op_name=op_name)
+
+    if strategy.on:
+        _validate_shared_key_fields(left, right, strategy.on, op_name)
+        for state, side in ((left, "left"), (right, "right")):
+            null_fields = [name for name in strategy.on if state.table[name].isna().any()]
+            if null_fields:
+                raise ValueError(
+                    f"{op_name}: DimensionJoin {side} scope fields contain nulls: "
+                    f"{null_fields}"
+                )
+
+    unsupported_dimensions = set(strategy.predicates) - set(strategy.dimensions)
+    if unsupported_dimensions:
+        raise ValueError(
+            f"{op_name}: DimensionJoin predicates reference dimensions not selected "
+            f"for matching: {sorted(unsupported_dimensions)}"
+        )
+    unsupported_predicates = {
+        name: predicate
+        for name, predicate in strategy.predicates.items()
+        if predicate != "overlap"
+    }
+    if unsupported_predicates:
+        raise ValueError(
+            f"{op_name}: DimensionJoin only supports the 'overlap' predicate; "
+            f"got {unsupported_predicates}."
+        )
+
+
+def _validate_shared_key_fields(
+    left: DatasetState,
+    right: DatasetState,
+    names: tuple[str, ...],
+    op_name: str,
+) -> None:
+    missing = [
+        name
+        for name in names
+        if not left.schema.has(name) or not right.schema.has(name)
+    ]
+    if missing:
+        raise ValueError(f"{op_name}: join fields are not present in both schemas: {missing}")
+
+    non_columns = [
+        name
+        for name in names
+        if name not in left.table.columns or name not in right.table.columns
+    ]
+    if non_columns:
+        raise ValueError(f"{op_name}: join fields must be table columns: {non_columns}")
+
+    for name in names:
+        compose_key(
+            (left.schema.get(name), right.schema.get(name)),
+            CompositionContext(role="key_coalesce", op=op_name),
+        )
+
+
+def _scope_key(row: pd.Series, names: tuple[str, ...]) -> tuple[Any, ...]:
+    return tuple(row[name] for name in names)
+
+
+def _validate_dimension_slice(
+    value: Any,
+    dimensions: tuple[str, ...],
+    *,
+    op_name: str,
+) -> None:
+    if not isinstance(value, DimensionedSlice):
+        raise TypeError(f"{op_name}: DimensionJoin requires DimensionedSlice values.")
+    for name in dimensions:
+        if name not in value.dims:
+            raise ValueError(f"{op_name}: DimensionJoin slice is missing dimension {name!r}.")
+        _bounded_interval(value.dims[name], name=name, op_name=op_name)
+
+
+def _slices_overlap(
+    left: DimensionedSlice,
+    right: DimensionedSlice,
+    dimensions: tuple[str, ...],
+) -> bool:
+    return all(
+        _intervals_overlap(
+            _bounded_interval(left.dims[name], name=name, op_name="join"),
+            _bounded_interval(right.dims[name], name=name, op_name="join"),
+        )
+        for name in dimensions
+    )
+
+
+def _bounded_interval(value: Any, *, name: str, op_name: str) -> tuple[Any, Any]:
+    if not isinstance(value, slice) or value.start is None or value.stop is None:
+        raise ValueError(
+            f"{op_name}: DimensionJoin dimension {name!r} must be a bounded slice."
+        )
+    if value.start >= value.stop:
+        raise ValueError(
+            f"{op_name}: DimensionJoin dimension {name!r} must have start < stop."
+        )
+    return value.start, value.stop
+
+
+def _intervals_overlap(left: tuple[Any, Any], right: tuple[Any, Any]) -> bool:
+    left_start, left_stop = left
+    right_start, right_stop = right
+    return left_start < right_stop and right_start < left_stop
 
 
 def _require_binary(

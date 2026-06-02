@@ -161,7 +161,7 @@ actually owns it:
 
 Examples should demonstrate this hierarchy. Domain-specific examples may expose
 helpers such as `make_audioset(...)`, `bind_audio_segments(...)`, or
-`bind_aerial_patches(...)` so that source-specific ceremony is written once and
+`bind_inria_patches(...)` so that source-specific ceremony is written once and
 ordinary use stays concise.
 
 ## Naming model
@@ -793,6 +793,15 @@ coupling is explicitly present or consumed. If a plan dataset has couplings,
 `explode` warns that plan couplings are ignored and that the user should
 consider consuming plan bindings before applying the plan.
 
+`make_plan(target, source_index=...)` is the minimal generic plan constructor.
+It creates a fresh plan index plus one validated `ForeignIndexField` into the
+target dataset. `assign(...)` can then add multiple payload columns, inferring
+`ValueField` by default or accepting `(Field, values)` for explicitly typed
+columns. `make_plan.from_dataframe(...)` and `make_plan.from_series(...)`
+provide short paths for table-shaped and one-column inputs. This keeps sparse
+extension planners focused on generating records rather than rebuilding plan
+schema and index-identity boilerplate.
+
 Keeping the source mapping column, for example `source_index`, may be useful
 for traceability but changes the output schema. This is a concrete case where
 an operator's transition contract may depend on user flags, so it should wait
@@ -858,6 +867,13 @@ baseline:
   `source_index` and columnar `slice` fields. It can plan from
   `DimensionedSliceField` extents or explicit `DimensionField` bindings, with
   window expansion handled by `DimensionedSliceArray`.
+- `make_plan` and `assign` provide the low-ceremony path for sparse or
+  extension-owned plan construction. Dense `window_expansion_plan` uses the
+  same primitives.
+- `DimensionJoin` produces join plans for bounded half-open interval overlap
+  across named `DimensionedSliceField` dimensions. Optional equality scope
+  fields keep local coordinate systems, such as per-tile pixel coordinates,
+  from matching across unrelated rows.
 - The AudioSet example demonstrates the intended ergonomics and source
   decoupling: `make_audio_files` parses the WAV source, `make_audioset_labels`
   parses labels/segments, `merge_audio_labels` composes them through
@@ -865,6 +881,14 @@ baseline:
   couplings once. Conventional usage gets implicitly sliced audio accessors
   through row access. It also includes waveform/spectrogram/label-count
   visualizations and a basic optional PyTorch `DataLoader`.
+- The Inria Aerial Image Labeling example demonstrates raster-native expansion
+  on a concrete building-segmentation dataset without geometry-specific core
+  logic: `make_inria` discovers RGB GeoTIFFs and aligned training masks,
+  `make_inria_mask_bbox_plan` emits connected-component bounding boxes,
+  `make_inria_patch_plan` produces candidate windows through
+  `window_expansion_plan`, scoped `DimensionJoin` selects windows overlapping
+  mask boxes, and `bind_inria_patches` applies filtered plans through `explode`
+  before binding deferred GeoTIFF window reads.
 
 ## Performance Direction
 

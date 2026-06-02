@@ -193,8 +193,9 @@ class DimensionedSliceArray(ExtensionArray):
             copy=False,
         )
 
-    def __array__(self, dtype: Any = None) -> np.ndarray:
-        return np.asarray([self[i] for i in range(len(self))], dtype=dtype or object)
+    def __array__(self, dtype: Any = None, copy: bool | None = None) -> np.ndarray:
+        values = np.asarray([self[i] for i in range(len(self))], dtype=dtype or object)
+        return values.copy() if copy else values
 
     def isna(self) -> np.ndarray:
         return self._mask.copy()

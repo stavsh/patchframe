@@ -52,8 +52,10 @@ RasterSize = int | tuple[int, int]
 IMAGE_FIELD = "image"
 MASK_FIELD = "mask"
 PATCH_FIELD = "patch"
+BBOX_FIELD = "bbox"
 IMAGE_EXTENT_FIELD = "image_extent"
 SOURCE_IMAGE_ID_FIELD = "source_image_id"
+SOURCE_INDEX_FIELD = "source_index"
 CITY_FIELD = "city"
 SPLIT_FIELD = "split"
 IMAGE_PATH_FIELD = "image_path"
@@ -62,6 +64,7 @@ IMAGE_HEIGHT_FIELD = "image_height"
 IMAGE_WIDTH_FIELD = "image_width"
 CHANNEL_COUNT_FIELD = "channel_count"
 METERS_PER_PIXEL_FIELD = "meters_per_pixel"
+COMPONENT_PIXELS_FIELD = "component_pixels"
 
 _IMAGE_ASSET_ID = 0
 _MASK_ASSET_ID = 1
@@ -323,6 +326,118 @@ def make_inria_patch_plan(
     )
 
 
+def make_inria_mask_bbox_plan(
+    images: pf.Dataset,
+    *,
+    min_component_pixels: int = 1,
+    connectivity: int = 1,
+    mask_field: str = MASK_FIELD,
+    source_index_field: str = SOURCE_INDEX_FIELD,
+    bbox_field: str = BBOX_FIELD,
+) -> pf.Dataset:
+    """Extract one pixel-space bbox row for each connected building-mask component.
+
+    This is intentionally example-owned rather than a generic collection
+    explode operator. It scans full training masks once to construct a compact,
+    inspectable label plan. Subsequent image and mask patch reads stay lazy.
+    """
+
+    if min_component_pixels <= 0:
+        raise ValueError("min_component_pixels must be positive.")
+    if connectivity not in {1, 2}:
+        raise ValueError("connectivity must be either 1 or 2.")
+    if not images.schema.has(mask_field):
+        raise ValueError("Inria mask bbox planning requires training imagery with masks.")
+
+    source_indexes = []
+    bboxes = []
+    component_pixels = []
+    for source_index, accessor in images.table[mask_field].items():
+        if not isinstance(accessor, pf.DataAccessor):
+            raise TypeError(f"Inria mask field {mask_field!r} must contain DataAccessor values.")
+        mask = np.asarray(accessor.materialize(images.source_manager), dtype=bool)
+        for bbox, pixels in _component_bboxes(
+            mask,
+            min_component_pixels=min_component_pixels,
+            connectivity=connectivity,
+        ):
+            source_indexes.append(source_index)
+            bboxes.append(bbox)
+            component_pixels.append(pixels)
+
+    plan = pf.make_plan(
+        images,
+        source_indexes,
+        source_index_field=source_index_field,
+        plan_index_name="bbox_id",
+        metadata={
+            "patchframe.plan": {
+                "type": "inria_mask_bbox",
+                "operator": "make_inria_mask_bbox_plan",
+                "source_index_field": source_index_field,
+                "bbox_field": bbox_field,
+            }
+        },
+    )
+    return pf.assign(
+        plan,
+        **{
+            bbox_field: (
+                pf.DimensionedSliceField(name=bbox_field, nullable=False),
+                pf.DimensionedSliceArray._from_sequence(bboxes),
+            ),
+            COMPONENT_PIXELS_FIELD: (
+                pf.ValueField(name=COMPONENT_PIXELS_FIELD, dtype=int, nullable=False),
+                pd.array(component_pixels, dtype="Int64"),
+            ),
+        },
+    )
+
+
+def make_inria_mask_patch_plan(
+    images: pf.Dataset,
+    *,
+    patch_size: RasterSize,
+    stride: RasterSize | None = None,
+    include_partial: bool = False,
+    min_component_pixels: int = 1,
+    connectivity: int = 1,
+    extent_field: str = IMAGE_EXTENT_FIELD,
+    patch_field: str = PATCH_FIELD,
+    bbox_field: str = BBOX_FIELD,
+    source_index_field: str = SOURCE_INDEX_FIELD,
+) -> pf.Dataset:
+    """Return regular Inria patches that overlap at least one building bbox."""
+
+    candidates = make_inria_patch_plan(
+        images,
+        patch_size=patch_size,
+        stride=stride,
+        include_partial=include_partial,
+        extent_field=extent_field,
+        patch_field=patch_field,
+    )
+    bboxes = make_inria_mask_bbox_plan(
+        images,
+        min_component_pixels=min_component_pixels,
+        connectivity=connectivity,
+        source_index_field=source_index_field,
+        bbox_field=bbox_field,
+    )
+    matches = pf.join(
+        candidates,
+        bboxes,
+        strategy=pf.DimensionJoin(
+            left_field=patch_field,
+            right_field=bbox_field,
+            dimensions=("y", "x"),
+            on=source_index_field,
+        ),
+    )
+    matched_patch_ids = pd.Index(matches.table["left_index"].dropna().unique())
+    return pf.where(candidates, candidates.table.index.isin(matched_patch_ids))
+
+
 def bind_inria_patches(
     images: pf.Dataset,
     plan: pf.Dataset | None = None,
@@ -450,6 +565,34 @@ def _format_asset(values: np.ndarray, *, asset_id: int) -> np.ndarray:
     raise ValueError(f"Unknown Inria asset id: {asset_id!r}.")
 
 
+def _component_bboxes(
+    mask: np.ndarray,
+    *,
+    min_component_pixels: int,
+    connectivity: int,
+) -> tuple[tuple[pf.DimensionedSlice, int], ...]:
+    if mask.ndim != 2:
+        raise ValueError(f"Inria building masks must be 2D; got shape {mask.shape!r}.")
+    ndimage = _ndimage()
+    structure = ndimage.generate_binary_structure(rank=2, connectivity=connectivity)
+    labels, _ = ndimage.label(mask, structure=structure)
+    bboxes = []
+    for component_id, component_slice in enumerate(ndimage.find_objects(labels), start=1):
+        if component_slice is None:
+            continue
+        pixels = int(np.count_nonzero(labels[component_slice] == component_id))
+        if pixels < min_component_pixels:
+            continue
+        y_slice, x_slice = component_slice
+        bboxes.append(
+            (
+                pf.DimensionedSlice(dims={"y": y_slice, "x": x_slice}),
+                pixels,
+            )
+        )
+    return tuple(bboxes)
+
+
 def _city_for(image_id: str) -> str:
     match = re.fullmatch(r"(.+?)(\d+)", image_id)
     if match is None:
@@ -495,6 +638,14 @@ def _rasterio() -> Any:
     except ImportError as err:
         raise ImportError("rasterio is required for the Inria aerial imagery example.") from err
     return rasterio
+
+
+def _ndimage() -> Any:
+    try:
+        from scipy import ndimage
+    except ImportError as err:
+        raise ImportError("scipy is required for Inria mask bbox extraction.") from err
+    return ndimage
 
 
 def _pyplot() -> Any:

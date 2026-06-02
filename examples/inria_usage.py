@@ -24,6 +24,7 @@ from examples.inria import (
     PATCH_FIELD,
     bind_inria_patches,
     make_inria,
+    make_inria_mask_patch_plan,
     make_inria_patch_plan,
     plot_patch,
 )
@@ -37,6 +38,7 @@ def main(
     patch_size: int,
     stride: int,
     max_patches: int | None,
+    min_component_pixels: int,
     include_partial: bool,
     plot: bool,
 ) -> pf.Dataset:
@@ -47,13 +49,23 @@ def main(
         images = pf.where(images, images.table[CITY_FIELD] == city)
         print(f"Selected {len(images.table)} tiles for city {city!r}")
 
-    plan = make_inria_patch_plan(
-        images,
-        patch_size=patch_size,
-        stride=stride,
-        include_partial=include_partial,
-    )
-    print(f"Planned {len(plan.table)} patches")
+    if split == "train":
+        plan = make_inria_mask_patch_plan(
+            images,
+            patch_size=patch_size,
+            stride=stride,
+            include_partial=include_partial,
+            min_component_pixels=min_component_pixels,
+        )
+        print(f"Planned {len(plan.table)} mask-containing patches")
+    else:
+        plan = make_inria_patch_plan(
+            images,
+            patch_size=patch_size,
+            stride=stride,
+            include_partial=include_partial,
+        )
+        print(f"Planned {len(plan.table)} patches")
 
     if max_patches is not None:
         plan = pf.where(plan, plan.table.index < max_patches)
@@ -90,6 +102,7 @@ if __name__ == "__main__":
     parser.add_argument("--patch-size", type=int, default=512)
     parser.add_argument("--stride", type=int, default=512)
     parser.add_argument("--max-patches", type=int, default=4)
+    parser.add_argument("--min-component-pixels", type=int, default=64)
     parser.add_argument("--include-partial", action="store_true")
     parser.add_argument("--plot", action="store_true")
     args = parser.parse_args()
@@ -100,6 +113,7 @@ if __name__ == "__main__":
         patch_size=args.patch_size,
         stride=args.stride,
         max_patches=args.max_patches,
+        min_component_pixels=args.min_component_pixels,
         include_partial=args.include_partial,
         plot=args.plot,
     )

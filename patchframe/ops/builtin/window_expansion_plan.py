@@ -16,12 +16,10 @@ from patchframe.dataset.dataset import Dataset
 from patchframe.dataset.fields import (
     DimensionedSliceField,
     DimensionField,
-    ForeignIndexField,
-    IndexField,
 )
-from patchframe.dataset.identity import primary_index_field
-from patchframe.dataset.schema import Schema
 from patchframe.ops.base import PlanOperator
+from patchframe.ops.builtin.assign import assign
+from patchframe.ops.builtin.make_plan import make_plan
 
 PLAN_INDEX_NAME = "plan_id"
 SOURCE_INDEX_FIELD = "source_index"
@@ -67,55 +65,38 @@ class window_expansion_plan(PlanOperator):
             else _slice_array_from_bindings(dataset, bindings)
         )
         parent_positions, slices = extent_array.explode_windows(windows)
-        table = _plan_table(
-            source_index=dataset.table.index.to_numpy(dtype=object)[parent_positions],
-            slices=slices,
+        metadata = _window_expansion_plan_metadata(
+            dataset,
+            extent_kind="field" if field is not None else "bindings",
+            extent_field=field,
             source_index_field=source_index_field,
             slice_field=slice_field,
             plan_index_name=plan_index_name,
+            window_dimensions=tuple(windows),
         )
-        schema = Schema(
-            fields=(
-                IndexField(name=plan_index_name),
-                ForeignIndexField(
-                    name=source_index_field,
-                    nullable=False,
-                    index_identity=primary_index_field(dataset.schema).identity,
-                ),
-                DimensionedSliceField(name=slice_field, nullable=False),
-            )
+        plan = make_plan(
+            dataset,
+            dataset.table.index.to_numpy(dtype=object)[parent_positions],
+            source_index_field=source_index_field,
+            plan_index_name=plan_index_name,
+            metadata=metadata,
         )
-        return self.build_plan_dataset(
-            schema=schema,
-            table=table,
-            sources=tuple(dataset.sources),
-            source_manager=dataset.source_manager,
-            metadata=_window_expansion_plan_metadata(
-                dataset,
-                extent_kind="field" if field is not None else "bindings",
-                extent_field=field,
-                source_index_field=source_index_field,
-                slice_field=slice_field,
-                plan_index_name=plan_index_name,
-                window_dimensions=tuple(windows),
-            ),
+        result = assign(
+            plan,
+            **{
+                slice_field: (
+                    DimensionedSliceField(name=slice_field, nullable=False),
+                    slices,
+                )
+            },
+        )
+        self.validate_plan_schema(
+            result.schema,
+            result.table,
             plan_index_name=plan_index_name,
             required_plan_fields=(source_index_field, slice_field),
         )
-
-
-def _plan_table(
-    *,
-    source_index: np.ndarray,
-    slices: DimensionedSliceArray,
-    source_index_field: str,
-    slice_field: str,
-    plan_index_name: str,
-) -> pd.DataFrame:
-    index = pd.RangeIndex(len(source_index), name=plan_index_name)
-    table = pd.DataFrame({source_index_field: source_index}, index=index)
-    table[slice_field] = pd.Series(slices, index=index)
-    return table
+        return result
 
 
 def _slice_array_from_field(dataset: Dataset, field: str) -> DimensionedSliceArray:

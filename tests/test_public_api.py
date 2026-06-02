@@ -22,6 +22,8 @@ def test_top_level_exports_core_dataset_objects():
 
 def test_top_level_exports_user_facing_operators():
     assert pf.make_from_dataframe
+    assert pf.make_plan
+    assert pf.assign
     assert pf.where
     assert pf.concat
     assert pf.join

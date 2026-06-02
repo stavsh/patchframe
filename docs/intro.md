@@ -251,6 +251,63 @@ with another audio representation. New combinations are assembled by dataset
 operators, not by writing a new dataset class for every product of
 `data_source x label_source`.
 
+## Inria aerial imagery in one sketch
+
+The [Inria Aerial Image Labeling dataset](https://project.inria.fr/aerialimagelabeling/)
+uses 0.3-meter RGB GeoTIFF tiles and aligned building masks for training. The
+example uses the same patchframe pattern for raster-native pixel patches while
+staying below the geometry layer: plans use pixel coordinates, and row access
+performs deferred GeoTIFF window reads.
+
+```python
+import patchframe as pf
+from examples.inria import (
+    bind_inria_patches,
+    make_inria,
+    make_inria_mask_bbox_plan,
+    make_inria_patch_plan,
+)
+
+images = make_inria("AerialImageDataset", split="train")
+candidate_plan = make_inria_patch_plan(images, patch_size=512, stride=256)
+bboxes = make_inria_mask_bbox_plan(images, min_component_pixels=64)
+
+# Pixel coordinates are tile-local, so source_index scopes the overlap join.
+matches = pf.join(
+    candidate_plan,
+    bboxes,
+    strategy=pf.DimensionJoin(
+        left_field="patch",
+        right_field="bbox",
+        dimensions=("y", "x"),
+        on="source_index",
+    ),
+)
+
+# Plans are datasets: inspect, filter, or sample them before loading pixels.
+matched_ids = matches.table["left_index"].dropna().unique()
+selected = pf.where(candidate_plan, candidate_plan.table.index.isin(matched_ids))
+patches = bind_inria_patches(images, selected)
+
+row = patches[0]
+image = row["image"]  # numpy array, loaded lazily for this patch only
+mask = row["mask"]    # aligned building mask, loaded for the same window
+pixel_slice = row["patch"]
+```
+
+`make_inria_patch_plan(...)` is a thin domain helper over
+`window_expansion_plan(...)`. `make_inria_mask_bbox_plan(...)` scans aligned
+training masks once and emits one pixel-space bbox row per connected building
+component. `DimensionJoin(...)` then selects candidate windows that overlap at
+least one bbox within the same source image. Finally, `bind_inria_patches(...)`
+applies the selected plan with `explode(...)`, then binds lazy image and mask
+window reads. The convenience helper `make_inria_mask_patch_plan(...)` wraps
+the planning sequence for normal usage.
+
+Sparse planners do not need to manually assemble plan schema boilerplate.
+`make_plan(images, source_index=...)` creates the validated foreign-index
+mapping, and `assign(...)` adds bbox and metric fields in one operation.
+
 That is the core patchframe pattern:
 
 1. Put source-specific complexity in `DataSource` and `make_*` operators.
@@ -266,7 +323,7 @@ modality-specific toolkit. Instead, it is an infrastructure layer for building
 dataset-specific tools:
 
 - `make_audioset(...)` for AudioSet-style audio metadata and WAV files
-- `make_satellite_patches(...)` for raster tiles and geospatial labels
+- `make_inria(...)` for Inria RGB tiles and aligned building-mask patches
 - `make_video_clips(...)` for frame ranges and annotations
 - `make_microscopy_dataset(...)` for image stores and region annotations
 - `make_simulation_runs(...)` for parameter tables and array outputs
@@ -301,8 +358,8 @@ The payoff is not just nicer code. The payoff is fewer silent dataset mistakes.
 ## Current status
 
 Patchframe is in early development. The core ideas are present, and the AudioSet
-example shows the desired user experience, but APIs may still move as more
-examples are extracted.
+and Inria aerial imagery examples show the desired user experience, but APIs may
+still move as more examples are extracted.
 
 The current package is best evaluated as a dataset infrastructure experiment
 with a concrete direction:
@@ -318,8 +375,8 @@ with a concrete direction:
 
 Potential development areas that fit the current design:
 
-- More domain examples: image patches, video clips, tabular-plus-embeddings,
-  scientific arrays, and remote-sensing tiles.
+- More domain examples: video clips, tabular-plus-embeddings, scientific
+  arrays, and geometry-aware remote-sensing labels.
 - Persistent dataset save/load through source IO adapters, without forcing
   external read-only sources into patchframe-managed storage.
 - Dask-style extensions for large materialization and feature computation,
@@ -337,6 +394,6 @@ Potential development areas that fit the current design:
 - Dataset quality workflows that compute metrics over lazy slices and join the
   results back by stable row identity.
 
-The common theme is the same as the AudioSet example: keep source-specific
+The common theme is the same across the examples: keep source-specific
 knowledge close to the source, keep dataset semantics explicit, and keep the
 ordinary user path close to the dataframe workflows people already know.

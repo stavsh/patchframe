@@ -9,7 +9,9 @@ import pytest
 
 import patchframe as pf
 from examples.inria import (
+    BBOX_FIELD,
     CITY_FIELD,
+    COMPONENT_PIXELS_FIELD,
     IMAGE_EXTENT_FIELD,
     IMAGE_FIELD,
     IMAGE_HEIGHT_FIELD,
@@ -17,10 +19,13 @@ from examples.inria import (
     MASK_FIELD,
     MASK_PATH_FIELD,
     PATCH_FIELD,
+    SOURCE_INDEX_FIELD,
     SPLIT_FIELD,
     InriaAerialDataSource,
     bind_inria_patches,
     make_inria,
+    make_inria_mask_bbox_plan,
+    make_inria_mask_patch_plan,
     make_inria_patch_plan,
 )
 from patchframe.data.manager import reset_default_manager
@@ -126,6 +131,50 @@ def test_inria_source_satisfies_partial_read_contract(inria_root):
         dim_slice=dim_slice,
         compare_partial=True,
     )
+
+
+def test_make_inria_mask_bbox_plan_emits_one_row_per_filtered_component(inria_root):
+    root, arrays = inria_root
+    mask = np.zeros((4, 6), dtype=bool)
+    mask[0:2, 0:2] = True
+    mask[3, 5] = True
+    arrays["train/gt/austin1.tif"] = mask
+    images = pf.where(make_inria(root), lambda table: table.index == "austin1")
+
+    bboxes = make_inria_mask_bbox_plan(images, min_component_pixels=2)
+
+    assert bboxes.table[SOURCE_INDEX_FIELD].tolist() == ["austin1"]
+    assert bboxes.table[COMPONENT_PIXELS_FIELD].tolist() == [4]
+    assert bboxes.table[BBOX_FIELD].iloc[0].dims == {
+        "y": slice(0, 2),
+        "x": slice(0, 2),
+    }
+    assert isinstance(bboxes.schema.get(SOURCE_INDEX_FIELD), pf.ForeignIndexField)
+    assert (
+        bboxes.schema.get(SOURCE_INDEX_FIELD).target_identity
+        == pf.primary_index_identity(images)
+    )
+
+
+def test_make_inria_mask_patch_plan_selects_only_scoped_overlapping_windows(inria_root):
+    root, arrays = inria_root
+    mask = np.zeros((4, 6), dtype=bool)
+    mask[0:2, 0:2] = True
+    arrays["train/gt/austin1.tif"] = mask
+    arrays["train/gt/vienna2.tif"] = np.zeros((5, 5), dtype=bool)
+    images = make_inria(root)
+
+    plan = make_inria_mask_patch_plan(
+        images,
+        patch_size=(2, 3),
+        stride=(2, 3),
+    )
+
+    assert plan.table[SOURCE_INDEX_FIELD].tolist() == ["austin1"]
+    assert plan.table[PATCH_FIELD].iloc[0].dims == {
+        "y": slice(0, 2),
+        "x": slice(0, 3),
+    }
 
 
 def test_filtered_plan_loads_only_selected_image_and_mask_windows(inria_root, monkeypatch):

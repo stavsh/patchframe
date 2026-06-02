@@ -5,7 +5,8 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from patchframe.dataset.fields import IndexField, ValueField
+from patchframe.data.dimensioned_slice import DimensionedSlice
+from patchframe.dataset.fields import DimensionedSliceField, IndexField, ValueField
 from patchframe.dataset.provenance import DatasetSourceInfo
 from patchframe.dataset.schema import Schema
 from patchframe.ops.builtin.join import DimensionJoin, FieldEqualityJoin, join
@@ -165,6 +166,133 @@ class TestFieldEqualityJoin:
         assert result.table["right_index"].iloc[1] == "r1"
 
 
+class TestDimensionJoin:
+    def test_matches_half_open_interval_overlap_across_all_dimensions(self):
+        left = _dataset(
+            pd.DataFrame(
+                {
+                    "extent": [
+                        DimensionedSlice(dims={"y": slice(0, 10), "x": slice(0, 10)}),
+                        DimensionedSlice(dims={"y": slice(10, 20), "x": slice(0, 10)}),
+                    ]
+                },
+                index=["l1", "l2"],
+            ),
+            DimensionedSliceField(name="extent"),
+        )
+        right = _dataset(
+            pd.DataFrame(
+                {
+                    "bbox": [
+                        DimensionedSlice(dims={"y": slice(5, 15), "x": slice(2, 4)}),
+                        DimensionedSlice(dims={"y": slice(20, 25), "x": slice(0, 5)}),
+                    ]
+                },
+                index=["r1", "r2"],
+            ),
+            DimensionedSliceField(name="bbox"),
+        )
+
+        result = join(
+            left,
+            right,
+            strategy=DimensionJoin(
+                left_field="extent",
+                right_field="bbox",
+                dimensions=("y", "x"),
+            ),
+        )
+
+        assert result.table.to_dict("list") == {
+            "left_index": ["l1", "l2"],
+            "right_index": ["r1", "r1"],
+        }
+
+    def test_scopes_tile_local_coordinates_by_equality_fields(self):
+        left = _dataset(
+            pd.DataFrame(
+                {
+                    "source_image_id": ["tile_a", "tile_b"],
+                    "extent": [
+                        DimensionedSlice(dims={"y": slice(0, 10), "x": slice(0, 10)}),
+                        DimensionedSlice(dims={"y": slice(0, 10), "x": slice(0, 10)}),
+                    ],
+                },
+                index=["l1", "l2"],
+            ),
+            ValueField(name="source_image_id", dtype=str),
+            DimensionedSliceField(name="extent"),
+        )
+        right = _dataset(
+            pd.DataFrame(
+                {
+                    "source_image_id": ["tile_b"],
+                    "bbox": [
+                        DimensionedSlice(dims={"y": slice(1, 2), "x": slice(1, 2)}),
+                    ],
+                },
+                index=["r1"],
+            ),
+            ValueField(name="source_image_id", dtype=str),
+            DimensionedSliceField(name="bbox"),
+        )
+
+        result = join(
+            left,
+            right,
+            strategy=DimensionJoin(
+                left_field="extent",
+                right_field="bbox",
+                dimensions=("y", "x"),
+                on="source_image_id",
+            ),
+        )
+
+        assert result.table.to_dict("list") == {
+            "left_index": ["l2"],
+            "right_index": ["r1"],
+        }
+
+    def test_left_join_keeps_unmatched_slices(self):
+        left = _dataset(
+            pd.DataFrame(
+                {
+                    "extent": [
+                        DimensionedSlice(dims={"y": slice(0, 2), "x": slice(0, 2)}),
+                        DimensionedSlice(dims={"y": slice(2, 4), "x": slice(0, 2)}),
+                    ]
+                },
+                index=["l1", "l2"],
+            ),
+            DimensionedSliceField(name="extent"),
+        )
+        right = _dataset(
+            pd.DataFrame(
+                {
+                    "bbox": [
+                        DimensionedSlice(dims={"y": slice(0, 1), "x": slice(0, 1)}),
+                    ]
+                },
+                index=["r1"],
+            ),
+            DimensionedSliceField(name="bbox"),
+        )
+
+        result = join(
+            left,
+            right,
+            strategy=DimensionJoin(
+                how="left",
+                left_field="extent",
+                right_field="bbox",
+                dimensions=("y", "x"),
+            ),
+        )
+
+        assert result.table["left_index"].tolist() == ["l1", "l2"]
+        assert result.table["right_index"].isna().tolist() == [False, True]
+
+
 class TestJoinErrors:
     def test_rejects_invalid_how(self):
         left = _dataset(pd.DataFrame({"x": [1]}, index=["a"]), ValueField(name="x", dtype=int))
@@ -200,12 +328,20 @@ class TestJoinErrors:
         with pytest.raises(ValueError, match="either 'strategy' or 'on'"):
             join(left, right, strategy=FieldEqualityJoin(on=("x",)), on="x")
 
-    def test_dimension_join_is_reserved_for_dimension_scope_support(self):
+    def test_dimension_join_requires_slice_fields(self):
         left = _dataset(pd.DataFrame({"x": [1]}, index=["a"]), ValueField(name="x", dtype=int))
         right = _dataset(pd.DataFrame({"x": [1]}, index=["a"]), ValueField(name="x", dtype=int))
 
-        with pytest.raises(NotImplementedError, match="DimensionJoin"):
-            join(left, right, strategy=DimensionJoin())
+        with pytest.raises(TypeError, match="DimensionedSliceField"):
+            join(
+                left,
+                right,
+                strategy=DimensionJoin(
+                    left_field="x",
+                    right_field="x",
+                    dimensions=("x",),
+                ),
+            )
 
     def test_join_plan_has_empty_couplings(self):
         left = _dataset(pd.DataFrame({"x": [1]}, index=["a"]), ValueField(name="x", dtype=int))
