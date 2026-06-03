@@ -6,11 +6,12 @@ import numpy as np
 import pandas as pd
 import pytest
 
+import patchframe as pf
 from patchframe.data.dimensioned_slice import DimensionedSlice
 from patchframe.data.dimensioned_slice_array import DimensionedSliceArray
 from patchframe.data.dimensions import Dimensions, IndexDimension, TemporalDimension
 from patchframe.data.manager import reset_default_manager
-from patchframe.dataset.couplings import BindDimensions, BindSlice, Materialize
+from patchframe.dataset.couplings import BindDimensions, BindSlice, FieldRef, Materialize
 from patchframe.dataset.fields import (
     DimensionedSliceField,
     DimensionField,
@@ -426,3 +427,71 @@ class TestConsume:
         ds2 = consume(ds, "data")
         assert ds2.schema is ds.schema or ds2.schema.names() == ds.schema.names()
         assert len(ds2.couplings.couplings) == len(ds.couplings.couplings)
+
+
+# ---------------------------------------------------------------------------
+# DatasetContext + FieldHandle dispatch
+# ---------------------------------------------------------------------------
+
+class TestFieldHandleDispatch:
+    def _dataset(self):
+        dim = IndexDimension(name="x")
+        ds = make_mock_dataset(["a"], Dimensions((dim,)), dim.spec(0, 100), seed=0)
+        return add_column(ds, DimensionedSliceField(name="clip"), [dim.spec(10, 30)])
+
+    def test_handle_dispatch_builds_local_couplings_and_advances_context(self):
+        ctx = self._dataset().context()
+        clip = ctx.field("clip")
+        data = ctx.field("data")
+
+        pf.bind_slice(clip, data)
+        pf.bind_materialize(data)
+        result = consume(data)
+
+        assert ctx.dataset is result
+        assert result.table["data"].iloc[0].shape == (20,)
+        bind, materialize = result.couplings.couplings
+        assert type(bind.slice_field) is FieldRef
+        assert type(bind.data_field) is FieldRef
+        assert type(materialize.field) is FieldRef
+
+    def test_ambient_string_dispatch_builds_and_consumes_couplings(self):
+        with self._dataset().context() as ctx:
+            pf.bind_slice("clip", "data")
+            pf.bind_materialize("data")
+            result = consume("data")
+
+        assert ctx.dataset is result
+        assert result.table["data"].iloc[0].shape == (20,)
+
+    def test_bind_dimensions_accepts_nested_field_handles(self):
+        dim = IndexDimension(name="x")
+        ds = make_mock_dataset(["a"], Dimensions((dim,)), dim.spec(0, 100), seed=0)
+        ds = add_column(ds, DimensionField(name="start", dimension=dim), [10])
+        ds = add_column(ds, DimensionField(name="stop", dimension=dim), [30])
+        ctx = ds.context()
+
+        pf.bind_dimensions.instance(dataset_context=ctx)(
+            slice_field="clip",
+            bindings={"x": (ctx.field("start"), ctx.field("stop"))},
+        )
+        result = consume(ctx.field("clip"))
+
+        assert result.table["clip"].iloc[0].dims["x"] == slice(10, 30)
+
+    def test_handles_from_different_contexts_are_rejected(self):
+        left = self._dataset().context()
+        right = self._dataset().context()
+
+        with pytest.raises(ValueError, match="must share one DatasetContext"):
+            pf.bind_slice(left.field("clip"), right.field("data"))
+
+    def test_handle_with_explicit_stale_dataset_snapshot_is_rejected(self):
+        initial = self._dataset()
+        ctx = initial.context()
+        clip = ctx.field("clip")
+        data = ctx.field("data")
+        pf.bind_slice(clip, data)
+
+        with pytest.raises(ValueError, match="current dataset snapshot"):
+            pf.bind_materialize(initial, data)

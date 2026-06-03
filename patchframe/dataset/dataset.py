@@ -58,6 +58,13 @@ class Dataset:
             self._engine = CouplingEngine(schema=self.schema, couplings=self.couplings)
         return self._engine
 
+    def context(self):
+        """Return an explicit mutable authoring context rooted at this dataset."""
+
+        from patchframe.dataset.context import DatasetContext
+
+        return DatasetContext(self)
+
     def __getitem__(self, key: Any) -> pd.Series | dict[str, Any]:
         """Column access or coupling-aware row access.
 

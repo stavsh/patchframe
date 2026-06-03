@@ -802,6 +802,29 @@ provide short paths for table-shaped and one-column inputs. This keeps sparse
 extension planners focused on generating records rather than rebuilding plan
 schema and index-identity boilerplate.
 
+For imperative pipeline authoring, `Dataset.context()` provides an explicit
+mutable cursor over immutable dataset snapshots. Unary operators may omit their
+dataset while a context is active, and `FieldHandle`s follow surviving fields
+through `FieldIdentity`:
+
+```python
+with patches.context() as ctx:
+    patch = ctx.field("patch")
+    image = ctx.field("image")
+    bind_slice(patch, image)
+    bind_materialize(image)
+    consume(image)
+
+patches = ctx.dataset
+```
+
+`make_plan(ctx.field("item_id"), source_index=...)` accepts an index handle but
+does not advance the context: the returned plan is a sibling artifact.
+Creation operators and `join(...)` follow the same sibling-output rule.
+Unary operators advance automatically. Composition operators advance only
+when the current context dataset is passed as an explicit input. `explode(plan)`
+uses the active context dataset as its source and advances that context.
+
 Keeping the source mapping column, for example `source_index`, may be useful
 for traceability but changes the output schema. This is a concrete case where
 an operator's transition contract may depend on user flags, so it should wait

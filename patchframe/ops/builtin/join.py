@@ -82,6 +82,7 @@ class DimensionJoin(JoinStrategy):
 class join(CompositionOperator):
     """Build a join-plan dataset mapping rows from two input datasets."""
 
+    advances_dataset_context = False
     transitions = TransitionPlan(
         schema=SchemaTransition.construct(),
         table=TableTransition.construct(),

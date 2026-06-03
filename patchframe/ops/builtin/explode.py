@@ -17,7 +17,7 @@ from patchframe.dataset.fields import ForeignIndexField, IndexField
 from patchframe.dataset.identity import primary_index_field
 from patchframe.dataset.schema import Schema
 from patchframe.dataset.state import DatasetState
-from patchframe.ops.base import Operator, PlanConsumerMixin
+from patchframe.ops.base import MISSING, Operator, PlanConsumerMixin
 from patchframe.ops.builtin._composition import normalize_field_names, normalize_table_to_schema
 from patchframe.ops.transitions import (
     Cardinality,
@@ -44,12 +44,25 @@ class explode(PlanConsumerMixin, Operator):
 
     def __call__(
         self,
-        source: Dataset,
-        plan: Dataset,
+        source: Dataset | Any = MISSING,
+        plan: Dataset | Any = MISSING,
         *,
         foreign_index_field: str | None = None,
         overlay_fields: str | Iterable[str] | None = None,
     ) -> Dataset:
+        dataset_context = self.resolve_dataset_context()
+        if plan is MISSING:
+            if dataset_context is None or not isinstance(source, Dataset):
+                raise TypeError("explode requires a source Dataset and a plan Dataset.")
+            plan = source
+            source = dataset_context.dataset
+        elif source is MISSING:
+            if dataset_context is None:
+                raise TypeError("explode requires a source Dataset.")
+            source = dataset_context.dataset
+        if not isinstance(source, Dataset) or not isinstance(plan, Dataset):
+            raise TypeError("explode requires a source Dataset and a plan Dataset.")
+
         self.validate_plan_dataset(plan)
         source_index_field = self.resolve_plan_foreign_index(
             plan,
@@ -80,7 +93,7 @@ class explode(PlanConsumerMixin, Operator):
             schema=schema,
             op_name=self.name,
         )
-        return Dataset(
+        result = Dataset(
             state=DatasetState(
                 schema=schema,
                 table=table,
@@ -93,6 +106,9 @@ class explode(PlanConsumerMixin, Operator):
             ),
             source_manager=source.source_manager,
         )
+        if dataset_context is not None and source is dataset_context.dataset:
+            dataset_context.adopt(result)
+        return result
 
 
 def _exploded_schema(source: DatasetState, plan: DatasetState) -> Schema:

@@ -36,6 +36,37 @@ def test_make_plan_builds_foreign_index_into_target_dataset():
     assert source_index.target_identity == pf.primary_index_identity(target)
 
 
+def test_make_plan_accepts_context_bound_index_field_handle():
+    target = _target()
+    ctx = target.context()
+
+    plan = pf.make_plan(ctx.field("item_id"), ["a", "b"])
+
+    assert ctx.dataset is target
+    assert plan.table["source_index"].tolist() == ["a", "b"]
+    assert (
+        plan.schema.get("source_index").target_identity
+        == pf.primary_index_identity(target)
+    )
+
+
+def test_make_plan_from_dataframe_accepts_context_bound_index_field_handle():
+    target = _target()
+    table = pd.DataFrame({"source_index": ["a"], "score": [0.1]})
+
+    plan = pf.make_plan.from_dataframe(target.context().field("item_id"), table)
+
+    assert plan.table["source_index"].tolist() == ["a"]
+    assert isinstance(plan.schema.get("score"), pf.ValueField)
+
+
+def test_make_plan_rejects_non_index_field_handle():
+    target = _target()
+
+    with pytest.raises(TypeError, match="must reference an IndexField"):
+        pf.make_plan(target.context().field("value"), ["a"])
+
+
 def test_make_plan_from_dataframe_infers_extra_value_fields():
     target = _target()
     table = pd.DataFrame(

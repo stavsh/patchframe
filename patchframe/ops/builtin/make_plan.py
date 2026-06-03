@@ -6,6 +6,7 @@ from typing import Any
 
 import pandas as pd
 
+from patchframe.dataset.context import FieldHandle
 from patchframe.dataset.dataset import Dataset
 from patchframe.dataset.fields import ForeignIndexField, IndexField, ValueField
 from patchframe.dataset.identity import primary_index_identity
@@ -25,13 +26,14 @@ class make_plan(PlanOperator):
 
     def __call__(
         self,
-        target: Dataset,
+        target: Dataset | FieldHandle,
         source_index: Any,
         *,
         source_index_field: str = SOURCE_INDEX_FIELD,
         plan_index_name: str = PLAN_INDEX_NAME,
         metadata: dict[str, Any] | None = None,
     ) -> Dataset:
+        target = _resolve_target(target)
         table = _plan_table(
             source_index=source_index,
             source_index_field=source_index_field,
@@ -49,7 +51,7 @@ class make_plan(PlanOperator):
     @classmethod
     def from_dataframe(
         cls,
-        target: Dataset,
+        target: Dataset | FieldHandle,
         table: pd.DataFrame,
         *,
         source_index_field: str = SOURCE_INDEX_FIELD,
@@ -59,6 +61,7 @@ class make_plan(PlanOperator):
     ) -> Dataset:
         """Build a plan from a dataframe, inferring extra columns as ValueFields."""
 
+        target = _resolve_target(target)
         return cls.instance()._build_from_dataframe(
             target,
             table,
@@ -71,7 +74,7 @@ class make_plan(PlanOperator):
     @classmethod
     def from_series(
         cls,
-        target: Dataset,
+        target: Dataset | FieldHandle,
         source_index: pd.Series,
         *,
         source_index_field: str | None = None,
@@ -81,6 +84,7 @@ class make_plan(PlanOperator):
     ) -> Dataset:
         """Build a one-column plan from a series of target index labels."""
 
+        target = _resolve_target(target)
         field_name = source_index_field or source_index.name or SOURCE_INDEX_FIELD
         table = source_index.to_frame(name=field_name)
         return cls.from_dataframe(
@@ -154,6 +158,20 @@ def _plan_table(
         {source_index_field: pd.Series(values, dtype=object)},
         index=pd.RangeIndex(len(values), name=plan_index_name),
     )
+
+
+def _resolve_target(target: Dataset | FieldHandle) -> Dataset:
+    if isinstance(target, Dataset):
+        return target
+    if not isinstance(target, FieldHandle):
+        raise TypeError("make_plan expects a Dataset or an IndexField FieldHandle.")
+
+    field_def = target.resolve()
+    if not isinstance(field_def, IndexField):
+        raise TypeError(
+            f"make_plan: FieldHandle {field_def.name!r} must reference an IndexField."
+        )
+    return target.dataset_context.dataset
 
 
 def _validate_source_index(

@@ -203,10 +203,14 @@ class concat(CompositionOperator):
     """Dispatch to ``concat_rows`` or ``concat_columns``."""
 
     def __call__(self, *datasets: Dataset, axis: int = 0, **kwargs: Any) -> Dataset:
+        params = {}
+        dataset_context = self.resolve_param("dataset_context")
+        if dataset_context is not None:
+            params["dataset_context"] = dataset_context
         if axis == 0:
-            return concat_rows.instance()(*datasets, **kwargs)
+            return concat_rows.instance(**params)(*datasets, **kwargs)
         if axis == 1:
-            return concat_columns.instance()(*datasets, **kwargs)
+            return concat_columns.instance(**params)(*datasets, **kwargs)
         raise ValueError("concat: axis must be 0 or 1.")
 
     def apply_schema(self, *states: DatasetState, **kwargs: Any) -> Schema:

@@ -9,6 +9,11 @@ from patchframe.dataset.couplings import (
     FieldRef,
     Materialize,
 )
+from patchframe.dataset.context import (
+    DatasetContext,
+    FieldHandle,
+    get_active_dataset_context,
+)
 from patchframe.dataset.dataset import Dataset
 from patchframe.dataset.field_composition import (
     ColumnCollisionStrategy,
@@ -58,11 +63,13 @@ __all__ = [
     "CouplingSet",
     "DataField",
     "Dataset",
+    "DatasetContext",
     "DatasetSourceInfo",
     "DatasetState",
     "DimensionField",
     "DimensionedSliceField",
     "Field",
+    "FieldHandle",
     "FieldCompositionPolicy",
     "FieldRef",
     "ForeignIndexField",
@@ -79,6 +86,7 @@ __all__ = [
     "ensure_primary_index_identity",
     "field_policy_for",
     "foreign_index_fields",
+    "get_active_dataset_context",
     "mint_primary_index_identity",
     "new_index_identity",
     "normalize_column",

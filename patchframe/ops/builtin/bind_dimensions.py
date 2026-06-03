@@ -6,6 +6,11 @@ from typing import Any
 
 import pandas as pd
 
+from patchframe.dataset.context import (
+    FieldHandle,
+    resolve_field_name,
+    resolve_field_selectors,
+)
 from patchframe.dataset.couplings import BindDimensions
 from patchframe.dataset.fields import DimensionedSliceField, DimensionField
 from patchframe.dataset.schema import Schema
@@ -53,10 +58,12 @@ class bind_dimensions(DatasetOperator):
     def apply_schema(
         self,
         state: DatasetState,
-        slice_field: str,
+        slice_field: str | FieldHandle,
         bindings: Any,
         **_: Any,
     ) -> Schema:
+        slice_field = resolve_field_name(slice_field, state.schema, op_name=self.name)
+        bindings = resolve_field_selectors(bindings, state.schema, op_name=self.name)
         _, norm_bindings = BindDimensions._normalize_bindings(bindings)
         for binding_refs in norm_bindings:
             for ref in binding_refs:
@@ -79,10 +86,11 @@ class bind_dimensions(DatasetOperator):
     def apply_table(
         self,
         state: DatasetState,
-        slice_field: str,
+        slice_field: str | FieldHandle,
         bindings: Any,
         **_: Any,
     ) -> pd.DataFrame:
+        slice_field = resolve_field_name(slice_field, state.schema, op_name=self.name)
         if slice_field in state.table.columns:
             return state.table
         df = state.table.copy()
@@ -92,8 +100,10 @@ class bind_dimensions(DatasetOperator):
     def new_couplings(
         self,
         state: DatasetState,
-        slice_field: str,
+        slice_field: str | FieldHandle,
         bindings: Any,
         **_: Any,
     ) -> tuple[BindDimensions, ...]:
+        slice_field = resolve_field_name(slice_field, state.schema, op_name=self.name)
+        bindings = resolve_field_selectors(bindings, state.schema, op_name=self.name)
         return (BindDimensions(slice_field=slice_field, bindings=bindings),)

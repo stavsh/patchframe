@@ -224,11 +224,18 @@ direction:
   kinds for common cases (datasets-as-sources, sparse, geometry-backed)
   must provide a similar high-level base so user-facing source authors
   implement only source-specific IO.
-- **Future `FieldHandle` / `DatasetRef` layer is the planned ergonomic
-  upgrade.** Immutable symbolic field references carrying name, type, and
-  owning index identity, resolving inside explicit dataset/operator
-  contexts. **No global pointer manager** of live datasets or fields; the
-  resolution must remain explicit and context-bound.
+- **`DatasetContext` is the explicit mutable authoring cursor.** Operators may
+  resolve one through their inherited `dataset_context` parameter or through
+  an ambient `with DatasetContext(dataset):` block. The cursor may advance
+  across immutable dataset snapshots, but it must remain process-local and
+  outside serialized dataset state. A future `execution_context` is separate:
+  it will carry executor selection rather than dataset ownership.
+- **`FieldHandle` resolution stays context-bound.** Immutable symbolic field
+  references carry `FieldIdentity` lineage and resolve against a
+  `DatasetContext`. Current handles are runtime authoring values: they reduce
+  back to local names before couplings are stored. **No global pointer manager**
+  of live datasets or fields; ambiguity must remain explicit. A future
+  serializable `DatasetRef` for Bundle fibers remains a separate concern.
 - **Plan datasets must remain inspectable, filterable, sampleable, and
   concatenable.** This is the value of plan/apply separation. Lazy
   evaluation must preserve this through the chunk-accessor pattern, not by

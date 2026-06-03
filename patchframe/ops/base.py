@@ -89,6 +89,7 @@ class Operator(metaclass=OperatorMeta):
 
     transitions: ClassVar[TransitionPlan] = TransitionPlan()
     cardinality: ClassVar[Cardinality] = Cardinality.UNKNOWN
+    dataset_context: ClassVar[Parameter] = Parameter(default=None)
     __parameters__: ClassVar[dict[str, Parameter]]
 
     def __init__(self, **bound_params: Any) -> None:
@@ -128,6 +129,17 @@ class Operator(metaclass=OperatorMeta):
         if spec.required:
             raise ValueError(f"Required parameter '{name}' is not bound.")
         return None
+
+    def resolve_dataset_context(self):
+        """Return the explicitly bound or ambient DatasetContext, if any."""
+
+        bound = self.resolve_param("dataset_context")
+        if bound is not None:
+            return bound
+
+        from patchframe.dataset.context import get_active_dataset_context
+
+        return get_active_dataset_context()
 
     @classmethod
     def parameter_names(cls) -> tuple[str, ...]:
@@ -175,8 +187,71 @@ class DatasetOperator(Operator):
     dispatch entirely.
     """
 
-    def __call__(self, dataset: Dataset, *args: Any, **kwargs: Any) -> Dataset:
-        return self._apply(dataset, *args, **kwargs)
+    def __call__(
+        self,
+        dataset: Dataset | Any = MISSING,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Dataset:
+        return self._dispatch(dataset, *args, **kwargs)
+
+    def _dispatch(
+        self,
+        dataset: Dataset | Any = MISSING,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Dataset:
+        dataset, args, kwargs, dataset_context = self._normalize_dataset_call(
+            dataset,
+            args,
+            kwargs,
+        )
+        result = self._apply(dataset, *args, **kwargs)
+        if dataset_context is not None and dataset is dataset_context.dataset:
+            dataset_context.adopt(result)
+        return result
+
+    def _normalize_dataset_call(
+        self,
+        dataset: Dataset | Any,
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+    ) -> tuple[Dataset, tuple[Any, ...], dict[str, Any], Any]:
+        """Resolve one unary call's dataset without rewriting operator arguments."""
+
+        from patchframe.dataset.context import field_handle_contexts
+
+        dataset_context = self.resolve_dataset_context()
+        handle_contexts = field_handle_contexts(dataset, args, kwargs)
+        if len(handle_contexts) > 1:
+            raise ValueError(f"{self.name}: FieldHandles must share one DatasetContext.")
+        if handle_contexts:
+            handle_context = handle_contexts[0]
+            if dataset_context is not None and dataset_context is not handle_context:
+                raise ValueError(
+                    f"{self.name}: FieldHandles belong to a different DatasetContext."
+                )
+            dataset_context = handle_context
+
+        if isinstance(dataset, Dataset):
+            if (
+                handle_contexts
+                and dataset_context is not None
+                and dataset is not dataset_context.dataset
+            ):
+                raise ValueError(
+                    f"{self.name}: FieldHandles resolve against their "
+                    "DatasetContext's current dataset snapshot."
+                )
+            return dataset, args, kwargs, dataset_context
+        if dataset_context is None:
+            raise TypeError(
+                f"{self.name}: expected a Dataset as the first argument or an "
+                "active DatasetContext."
+            )
+        if dataset is not MISSING:
+            args = (dataset, *args)
+        return dataset_context.dataset, args, kwargs, dataset_context
 
     def _apply(self, dataset: Dataset, *args: Any, **kwargs: Any) -> Dataset:
         new_state = compute_output_state(self, (dataset.state,), args, kwargs)
@@ -543,20 +618,29 @@ class CompositionOperator(Operator):
         sources=SourcesTransition.derive(),
         index_identity=IndexIdentityTransition.coalesce(),
     )
+    advances_dataset_context: ClassVar[bool] = True
 
     def __call__(self, *datasets: Dataset, **kwargs: Any) -> Dataset:
         return self._compose(*datasets, **kwargs)
 
     def _compose(self, *datasets: Dataset, **kwargs: Any) -> Dataset:
+        dataset_context = self.resolve_dataset_context()
         states = tuple(d.state for d in datasets)
         new_state = compute_output_state(self, states, (), kwargs)
         source_manager = self.combine_source_managers(
             *datasets, composed_schema=new_state.schema
         )
-        return Dataset(
+        result = Dataset(
             state=new_state,
             source_manager=source_manager,
         )
+        if (
+            self.advances_dataset_context
+            and dataset_context is not None
+            and any(dataset is dataset_context.dataset for dataset in datasets)
+        ):
+            dataset_context.adopt(result)
+        return result
 
     def combine_sources(
         self,

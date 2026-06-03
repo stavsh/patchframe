@@ -7,17 +7,20 @@ import patchframe as pf
 
 def test_top_level_exports_core_dataset_objects():
     assert pf.Dataset
+    assert pf.DatasetContext
     assert pf.DatasetState
     assert pf.Schema
     assert pf.IndexField
     assert pf.IndexIdentity
     assert pf.ForeignIndexField
+    assert pf.FieldHandle
     assert pf.ValueField
     assert pf.ArrayDataSource
     assert pf.AxisWindow
     assert pf.DataAccessor
     assert pf.ResolvedSlice
     assert pf.Dimensions
+    assert pf.get_active_dataset_context
 
 
 def test_top_level_exports_user_facing_operators():

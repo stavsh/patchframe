@@ -16,7 +16,7 @@ from patchframe.dataset.field_composition import (
 from patchframe.dataset.fields import Field, ValueField
 from patchframe.dataset.schema import Schema
 from patchframe.dataset.state import DatasetState
-from patchframe.ops.base import DatasetOperator
+from patchframe.ops.base import MISSING, DatasetOperator
 from patchframe.ops.transitions import Cardinality, SchemaTransition, TransitionPlan
 
 
@@ -41,12 +41,12 @@ class assign(DatasetOperator):
 
     def __call__(
         self,
-        dataset,
+        dataset=MISSING,
         *,
         couplings: tuple[Coupling, ...] = (),
         **columns: Any,
     ):
-        return self._apply(dataset, columns=columns, couplings=couplings)
+        return self._dispatch(dataset, columns=columns, couplings=couplings)
 
     def apply_schema(
         self,

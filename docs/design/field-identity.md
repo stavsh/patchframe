@@ -70,12 +70,11 @@ not change that.)
 
 ### Beyond lineage
 
-`FieldIdentity` is also intended as the stable token a future field-reference
-layer resolves against — binding fields by reference instead of by name, and a
-`BundleField` reference signalling an operator to be treated as a lazy
-coupling. That "field reference manager" is future work, kin to the
-`FieldHandle` / `DatasetRef` layer in `design-constraints.md`; it is not built
-in this stage. The uuid-token design supports it without further change.
+`FieldIdentity` is also the stable token the context-bound `FieldHandle` layer
+resolves against. `DatasetContext` handles support imperative authoring while
+stored couplings remain local and name-based. A future serializable
+`DatasetRef` for `BundleField` values is still separate work. The uuid-token
+design supports that extension without further change.
 
 The `IndexIdentity` work is the playbook for the propagation shape; the minting
 site differs (field construction vs dataset construction) for the reason above.

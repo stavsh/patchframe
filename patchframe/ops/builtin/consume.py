@@ -21,6 +21,7 @@ from typing import Any
 
 import pandas as pd
 
+from patchframe.dataset.context import FieldHandle, resolve_field_name
 from patchframe.dataset.couplings import Coupling
 from patchframe.dataset.state import DatasetState
 from patchframe.ops.base import DatasetOperator
@@ -43,7 +44,7 @@ class consume(DatasetOperator):
     def apply_table(
         self,
         state: DatasetState,
-        target: str | Coupling,
+        target: str | FieldHandle | Coupling,
         **_: Any,
     ) -> pd.DataFrame:
         from patchframe.dataset.coupling_engine import CouplingEngine
@@ -52,6 +53,7 @@ class consume(DatasetOperator):
         if isinstance(target, Coupling):
             to_run = engine.couplings_up_to(target)
         else:
+            target = resolve_field_name(target, state.schema, op_name=self.name)
             to_run = engine.couplings_for_column(target)
             if not to_run:
                 raise ValueError(f"No couplings produce column {target!r}.")
