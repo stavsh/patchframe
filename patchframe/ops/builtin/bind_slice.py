@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from patchframe.dataset.context import FieldHandle, resolve_field_name
 from patchframe.dataset.couplings import BindSlice, FieldRef
+from patchframe.dataset.fields import DataField, DimensionedSliceField
 from patchframe.dataset.state import DatasetState
 from patchframe.ops.base import DatasetOperator
+from patchframe.ops.signature import FieldInput, FieldReturn
 from patchframe.ops.transitions import (
     Cardinality,
+    PerRowIndependence,
     SchemaTransition,
     TableTransition,
     TransitionPlan,
@@ -35,16 +37,18 @@ class bind_slice(DatasetOperator):
         table=TableTransition.preserve(),
     )
     cardinality = Cardinality.PRESERVE
+    per_row_independent = PerRowIndependence.INDEPENDENT
+    slice_field = FieldInput(field_type=DimensionedSliceField)
+    data_field = FieldInput(field_type=DataField, output=True)
+    returns = FieldReturn()
 
     def new_couplings(
         self,
         state: DatasetState,
-        slice_field: str | FieldHandle,
-        data_field: str | FieldHandle,
+        slice_field: str,
+        data_field: str,
         **_: Any,
     ) -> tuple[BindSlice, ...]:
-        slice_field = resolve_field_name(slice_field, state.schema, op_name=self.name)
-        data_field = resolve_field_name(data_field, state.schema, op_name=self.name)
         return (
             BindSlice(slice_field=FieldRef(slice_field), data_field=FieldRef(data_field)),
         )

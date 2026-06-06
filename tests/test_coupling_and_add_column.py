@@ -486,6 +486,23 @@ class TestFieldHandleDispatch:
         with pytest.raises(ValueError, match="must share one DatasetContext"):
             pf.bind_slice(left.field("clip"), right.field("data"))
 
+    def test_interpreter_gives_bind_slice_a_lazy_arm(self):
+        # bind_slice never had a hand-written __call__ branch: its lazy arm comes
+        # purely from the signature interpreter (two FieldInput operands, the
+        # output one marked, + FieldReturn). The strongest proof the interpreter
+        # generalizes past the four migrated branches.
+        ctx = self._dataset().context()
+
+        handle = pf.bind_slice(ctx.field("clip"), ctx.field("data"))
+
+        assert isinstance(handle, pf.FieldHandle)
+        assert handle.name == "data"  # data_field is the in-place output
+        assert any(isinstance(c, BindSlice) for c in ctx.dataset.couplings.couplings)
+        # The returned handle chains into another lazy op: bind_slice -> handle
+        # -> bind_materialize -> handle -> collect materializes the sliced array.
+        result = pf.bind_materialize(handle).collect()
+        assert result.table["data"].iloc[0].shape == (20,)
+
     def test_handle_with_explicit_stale_dataset_snapshot_is_rejected(self):
         initial = self._dataset()
         ctx = initial.context()

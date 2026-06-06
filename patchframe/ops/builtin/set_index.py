@@ -13,6 +13,7 @@ from patchframe.ops.base import DatasetOperator
 from patchframe.ops.transitions import (
     Cardinality,
     IndexIdentityTransition,
+    PerRowIndependence,
     SchemaTransition,
     TransitionPlan,
 )
@@ -26,6 +27,7 @@ class set_index(DatasetOperator):
         index_identity=IndexIdentityTransition.mint(),
     )
     cardinality = Cardinality.PRESERVE
+    per_row_independent = PerRowIndependence.DEPENDENT  # index uniqueness is global
 
     def apply_schema(
         self,

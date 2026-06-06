@@ -93,6 +93,70 @@ def test_window_expansion_plan_from_slice_field_skips_null_rows():
     ]
 
 
+def test_window_expansion_plan_accepts_slice_field_handle_without_advancing_context():
+    x = pf.IndexDimension(name="x")
+    table = pd.DataFrame(
+        {"extent": [x.spec(0, 5)]},
+        index=pd.Index(["a"], name="item_id"),
+    )
+    schema = pf.Schema(
+        fields=(
+            pf.IndexField(name="item_id"),
+            pf.DimensionedSliceField(name="extent"),
+        )
+    )
+    ds = pf.Dataset(state=pf.DatasetState(schema=schema, table=table))
+    ctx = ds.context()
+
+    with ctx:
+        plan = pf.window_expansion_plan(
+            ctx.dataset,
+            field=ctx.field("extent"),
+            windows={"x": pf.AxisWindow(2, 2, include_partial=True)},
+        )
+
+    assert ctx.dataset is ds
+    assert plan.table["source_index"].tolist() == ["a", "a", "a"]
+
+
+def test_window_expansion_plan_normalize_call_resolves_field_handle():
+    x = pf.IndexDimension(name="x")
+    table = pd.DataFrame(
+        {"extent": [x.spec(0, 5)]},
+        index=pd.Index(["a"], name="item_id"),
+    )
+    schema = pf.Schema(
+        fields=(
+            pf.IndexField(name="item_id"),
+            pf.DimensionedSliceField(name="extent"),
+        )
+    )
+    ds = pf.Dataset(state=pf.DatasetState(schema=schema, table=table))
+    ctx = ds.context()
+
+    call = pf.window_expansion_plan.instance().normalize_call(
+        ctx.dataset,
+        field=ctx.field("extent"),
+        windows={"x": pf.AxisWindow(2, 2)},
+    )
+
+    assert call.kwargs["field"] == "extent"
+    assert call.reference_contexts == (ctx,)
+
+
+def test_window_expansion_plan_accepts_binding_field_handles():
+    ds = _dimension_field_dataset()
+    ctx = ds.context()
+
+    plan = pf.window_expansion_plan(
+        ctx.dataset,
+        bindings={"x": (ctx.field("x0"), ctx.field("x1"))},
+        windows={"x": pf.AxisWindow(20, 20)},
+    )
+
+    assert plan.table["source_index"].tolist() == ["a", "a", "b", "b"]
+
+
 def test_window_expansion_plan_from_columnar_slice_field():
     x = pf.IndexDimension(name="x")
     extents = pf.DimensionedSliceArray.from_columns(

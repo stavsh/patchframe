@@ -361,3 +361,55 @@ class Materialize(Coupling):
             row = dict(row)
             row[self.field.name] = v.materialize()
         return row
+
+
+@dataclass(frozen=True, slots=True)
+class ApplyOperator(Coupling):
+    """Deferred operator application over ``BundleField`` cells.
+
+    The base-level lift that lets an otherwise non-coupling-able operator
+    (``merge``, ``concat``, ``join``) be recorded as a coupling: it reads input
+    ``BundleField`` columns — each cell a whole ``Dataset`` — runs the *eager*
+    operator on the cell datasets, and writes the result ``Dataset`` into the
+    output cell. At the base level this is "read cell(s), write a cell, per
+    row" (cardinality-preserving, field-filling), so it satisfies the coupling
+    contract; the cell encapsulates the operator's internal cardinality change.
+
+    The coupling stores the operator (a class or configured instance, called
+    eagerly) plus the call-time keyword ``params``. Because the cells are plain
+    ``Dataset``s, ``compute`` always hits the operator's eager arm — no
+    re-deferral. ``consume`` (the terminal) runs this coupling; the bundle's
+    ``collect`` step then extracts the filled output cell.
+    """
+
+    inputs: tuple[FieldRef, ...]
+    output: FieldRef
+    operator: Any
+    params: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "inputs", _coerce_field_ref_tuple(self.inputs))
+        object.__setattr__(self, "output", _coerce_field_ref(self.output))
+        object.__setattr__(self, "params", dict(self.params))
+
+    def input_fields(self) -> tuple[str, ...]:
+        return tuple(ref.name for ref in self.inputs)
+
+    def output_field(self) -> str:
+        return self.output.name
+
+    def _apply_operator(self, cells: list[Any]) -> Any:
+        return self.operator(*cells, **dict(self.params))
+
+    def compute(self, state: DatasetState) -> pd.Series:
+        out = pd.Series(index=state.table.index, dtype=object)
+        for label in state.table.index:
+            cells = [state.table.at[label, ref.name] for ref in self.inputs]
+            out.at[label] = self._apply_operator(cells)
+        return out
+
+    def apply_row(self, row: dict[str, Any], state: DatasetState) -> dict[str, Any]:
+        cells = [row.get(ref.name) for ref in self.inputs]
+        row = dict(row)
+        row[self.output.name] = self._apply_operator(cells)
+        return row

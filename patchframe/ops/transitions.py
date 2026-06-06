@@ -35,6 +35,23 @@ class Cardinality(Enum):
     UNKNOWN = "unknown"     # no local cardinality guarantee
 
 
+class PerRowIndependence(Enum):
+    """Whether output row ``i`` depends only on input row ``i``.
+
+    Declared adjacent to ``Cardinality`` (a ``ClassVar`` on the operator, not a
+    ``TransitionPlan`` aspect). Together with cardinality and index-identity
+    minting it forms the "3-part test" that decides whether an operator can be a
+    same-level coupling or needs a ``BundleField`` carrier in the lazy arm (see
+    ``lazy-and-bundle.md`` §4). ``UNKNOWN`` routes conservatively — an op that
+    is dynamic (``consume``) or conditional (unaligned ``concat_columns``) fails
+    the test and is treated as needing a bundle.
+    """
+
+    INDEPENDENT = "independent"  # output row i depends only on input row i
+    DEPENDENT = "dependent"      # output depends on other rows (global/cross-row)
+    UNKNOWN = "unknown"          # no local guarantee; resolved per call or dynamic
+
+
 SchemaMode = Literal[
     "preserve", "extend", "narrow", "rewrite", "compose", "construct", "custom", "infer"
 ]

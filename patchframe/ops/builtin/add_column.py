@@ -16,7 +16,12 @@ from patchframe.dataset.fields import Field
 from patchframe.dataset.schema import Schema
 from patchframe.dataset.state import DatasetState
 from patchframe.ops.base import DatasetOperator
-from patchframe.ops.transitions import Cardinality, SchemaTransition, TransitionPlan
+from patchframe.ops.transitions import (
+    Cardinality,
+    PerRowIndependence,
+    SchemaTransition,
+    TransitionPlan,
+)
 
 
 class add_column(DatasetOperator):
@@ -36,6 +41,7 @@ class add_column(DatasetOperator):
 
     transitions = TransitionPlan(schema=SchemaTransition.extend())
     cardinality = Cardinality.PRESERVE
+    per_row_independent = PerRowIndependence.INDEPENDENT
 
     def apply_schema(
         self,

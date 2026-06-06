@@ -68,7 +68,7 @@ def _identity_inherit(states, resolved, output_schema, operator, args, kwargs):
         raise ValueError(
             f"{operator.name}: dispatch does not yet support named-input "
             f"index identity inherit (input={input_idx!r}). Operators with "
-            f"named-input dispatch must override __call__."
+            f"named-input dispatch must provide custom run logic."
         )
     source_state = states[input_idx]
     try:
@@ -333,6 +333,8 @@ def compute_output_state(
     states: tuple[DatasetState, ...],
     args: tuple,
     kwargs: dict,
+    *,
+    declared_transitions: TransitionPlan | None = None,
 ) -> DatasetState:
     """Compute the output ``DatasetState`` for an operator call through dispatch.
 
@@ -354,7 +356,11 @@ def compute_output_state(
     merge with the input dataset's metadata / side maps via
     ``replace_state`` if those need to be preserved.
     """
-    declared = operator.resolve_transitions(*states, *args, **kwargs)
+    declared = (
+        declared_transitions
+        if declared_transitions is not None
+        else operator.resolve_transitions(*states, *args, **kwargs)
+    )
     output_schema = _build_schema(operator, declared, states, args, kwargs)
     input_schemas = tuple(state.schema for state in states)
     resolved = resolve_derived_transitions(

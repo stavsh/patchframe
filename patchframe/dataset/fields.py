@@ -242,3 +242,23 @@ class DimensionedSliceField(Field):
 
     def validate_column(self, series: pd.Series) -> None:
         pass  # column stores DimensionedSlice objects
+
+
+@dataclass(frozen=True, slots=True)
+class BundleField(Field):
+    """Column whose cells hold whole Datasets.
+
+    The dataset-valued analogue of ``DataField``: a ``DataField`` cell holds an
+    array (eager) or a ``DataAccessor`` (lazy); a ``BundleField`` cell holds a
+    ``Dataset`` (eager) — the lazy ``DatasetAccessor`` form is future work. The
+    column dtype is always ``object``; a not-yet-materialized cell is null.
+
+    A ``BundleField`` carries a ``FieldIdentity`` like any field; that is the
+    column's identity as a schema entity and is orthogonal to the row
+    identities the contained datasets carry.
+    """
+
+    logical_type: ClassVar[str] = "bundle"
+
+    def validate_column(self, series: pd.Series) -> None:
+        pass  # cells hold Dataset objects (or null when unmaterialized)

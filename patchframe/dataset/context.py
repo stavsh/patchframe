@@ -95,6 +95,71 @@ class FieldHandle:
 
         return self.resolve().name
 
+    def collect(self) -> Dataset:
+        """Materialize the pending coupling(s) producing this field; return a Dataset.
+
+        The user-facing exit bridge (lazy-and-bundle.md §1): the nullary terminal,
+        the one carve-out to "handles do not execute". Runs the couplings whose
+        end node is this field (via the idempotent ``consume``). When the field is
+        a ``BundleField`` the filled cell is itself a dataset, so it is extracted
+        and returned; otherwise the container dataset (with this field
+        materialized) is returned.
+        """
+
+        from patchframe.ops.bundle import _collect
+
+        return _collect(self.dataset_context.dataset, self.name)
+
+
+@dataclass(frozen=True, slots=True)
+class FieldSelection:
+    """An ordered selection of ``FieldHandle``s sharing one ``DatasetContext``.
+
+    The multi-field authoring operand produced by ``Dataset.fields([...])``. It
+    is deliberately *not* a ``FieldRef`` (the persisted coupling reference) and
+    *not* an array (the multidimensional data layer); it is just a typed list of
+    handles an operator can consume as a unit.
+    """
+
+    handles: tuple[FieldHandle, ...]
+
+    def __post_init__(self) -> None:
+        handles = tuple(self.handles)
+        object.__setattr__(self, "handles", handles)
+        contexts: list[DatasetContext] = []
+        for handle in handles:
+            if not isinstance(handle, FieldHandle):
+                raise TypeError("FieldSelection accepts FieldHandle values only.")
+            if all(handle.dataset_context is not existing for existing in contexts):
+                contexts.append(handle.dataset_context)
+        if len(contexts) > 1:
+            raise ValueError("FieldSelection handles must share one DatasetContext.")
+
+    def __iter__(self):
+        return iter(self.handles)
+
+    def __len__(self) -> int:
+        return len(self.handles)
+
+    def __getitem__(self, index):
+        return self.handles[index]
+
+    @property
+    def dataset_context(self) -> DatasetContext | None:
+        """Return the shared context, or ``None`` for an empty selection."""
+
+        return self.handles[0].dataset_context if self.handles else None
+
+    def names(self) -> tuple[str, ...]:
+        """Return each handle's current local field name."""
+
+        return tuple(handle.name for handle in self.handles)
+
+    def resolve(self) -> tuple[Field, ...]:
+        """Resolve each handle against the shared context's current snapshot."""
+
+        return tuple(handle.resolve() for handle in self.handles)
+
 
 def get_active_dataset_context() -> DatasetContext | None:
     """Return the ambient DatasetContext for the current execution context."""
@@ -143,6 +208,10 @@ def resolve_field_selectors(
 
     if isinstance(value, FieldHandle):
         return resolve_field_name(value, schema, op_name=op_name)
+    if isinstance(value, FieldSelection):
+        return tuple(
+            resolve_field_name(handle, schema, op_name=op_name) for handle in value.handles
+        )
     if isinstance(value, Mapping):
         return type(value)(
             (
@@ -161,6 +230,9 @@ def resolve_field_selectors(
 def _iter_field_handles(value: Any):
     if isinstance(value, FieldHandle):
         yield value
+        return
+    if isinstance(value, FieldSelection):
+        yield from value.handles
         return
     if isinstance(value, Mapping):
         for key, item in value.items():

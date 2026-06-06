@@ -10,6 +10,7 @@ from patchframe.ops.transitions import (
     Cardinality,
     CouplingsTransition,
     IndexIdentityTransition,
+    PerRowIndependence,
     SchemaTransition,
     SourcesTransition,
     TableTransition,
@@ -138,6 +139,37 @@ def test_operator_cardinality_declarations():
     assert pf.keep.cardinality is Cardinality.PRESERVE
     assert pf.rename.cardinality is Cardinality.PRESERVE
     assert pf.explode.cardinality is Cardinality.EXPAND
+
+
+def test_operator_per_row_independence_declarations():
+    independent = (
+        pf.where,
+        pf.rename,
+        pf.drop,
+        pf.keep,
+        pf.add_column,
+        pf.assign,
+        pf.bind_slice,
+        pf.bind_materialize,
+        pf.bind_dimensions,
+        pf.explode,
+        pf.concat_rows,
+        pf.window_expansion_plan,
+    )
+    for op in independent:
+        assert op.per_row_independent is PerRowIndependence.INDEPENDENT, op.__name__
+
+    # Global / cross-row operators fail the 3-part test on per-row independence.
+    for op in (pf.set_index, pf.join, pf.merge):
+        assert op.per_row_independent is PerRowIndependence.DEPENDENT, op.__name__
+
+    # Dynamic (consume, from its couplings) / conditional (unaligned
+    # concat_columns) operators stay UNKNOWN — conservative routing.
+    for op in (pf.consume, pf.concat_columns):
+        assert op.per_row_independent is PerRowIndependence.UNKNOWN, op.__name__
+
+    # Default for an undeclared operator is UNKNOWN.
+    assert pf.Operator.per_row_independent is PerRowIndependence.UNKNOWN
 
 
 def test_operator_transition_declarations():

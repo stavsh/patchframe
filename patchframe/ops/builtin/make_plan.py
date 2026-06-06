@@ -11,7 +11,7 @@ from patchframe.dataset.dataset import Dataset
 from patchframe.dataset.fields import ForeignIndexField, IndexField, ValueField
 from patchframe.dataset.identity import primary_index_identity
 from patchframe.dataset.schema import Schema
-from patchframe.ops.base import PlanOperator
+from patchframe.ops.base import OperatorCall, PlanOperator
 
 PLAN_INDEX_NAME = "plan_id"
 SOURCE_INDEX_FIELD = "source_index"
@@ -23,6 +23,7 @@ class make_plan(PlanOperator):
 
     plan_index_name = PLAN_INDEX_NAME
     required_plan_fields = (SOURCE_INDEX_FIELD,)
+    field_handle_inputs = ("target",)
 
     def __call__(
         self,
@@ -33,20 +34,71 @@ class make_plan(PlanOperator):
         plan_index_name: str = PLAN_INDEX_NAME,
         metadata: dict[str, Any] | None = None,
     ) -> Dataset:
-        target = _resolve_target(target)
-        table = _plan_table(
-            source_index=source_index,
+        return PlanOperator.__call__(
+            self,
+            target,
+            source_index,
             source_index_field=source_index_field,
             plan_index_name=plan_index_name,
+            metadata=metadata,
+        )
+
+    def normalize_call(
+        self,
+        target: Dataset | FieldHandle,
+        source_index: Any,
+        *,
+        source_index_field: str = SOURCE_INDEX_FIELD,
+        plan_index_name: str = PLAN_INDEX_NAME,
+        metadata: dict[str, Any] | None = None,
+    ) -> OperatorCall:
+        reference_contexts = self._assert_field_handles_allowed(target)
+        self._reject_unresolved_field_handles(
+            source_index,
+            source_index_field,
+            plan_index_name,
+            metadata,
+        )
+        target = _resolve_target(target)
+        return OperatorCall(
+            operator=self,
+            datasets=(target,),
+            states=(target.state,),
+            args=(source_index,),
+            kwargs={
+                "source_index_field": source_index_field,
+                "plan_index_name": plan_index_name,
+                "metadata": metadata,
+            },
+            reference_contexts=reference_contexts,
+            variant="source_indexed",
+        )
+
+    def run(self, call: OperatorCall, _) -> Dataset:
+        target = call.datasets[0]
+        source_index = call.args[0]
+        kwargs = dict(call.kwargs)
+        table = _plan_table(
+            source_index=source_index,
+            source_index_field=kwargs["source_index_field"],
+            plan_index_name=kwargs["plan_index_name"],
         )
         return self._build_from_dataframe(
             target,
             table,
-            source_index_field=source_index_field,
-            plan_index_name=plan_index_name,
-            metadata=metadata,
+            source_index_field=kwargs["source_index_field"],
+            plan_index_name=kwargs["plan_index_name"],
+            metadata=kwargs["metadata"],
             copy=False,
         )
+
+    def plan_validation_options(self, call: OperatorCall) -> dict[str, Any]:
+        kwargs = dict(call.kwargs)
+        source_index_field = kwargs.get("source_index_field", SOURCE_INDEX_FIELD)
+        return {
+            "plan_index_name": kwargs.get("plan_index_name", PLAN_INDEX_NAME),
+            "required_plan_fields": (source_index_field,),
+        }
 
     @classmethod
     def from_dataframe(

@@ -17,12 +17,13 @@ from patchframe.dataset.fields import ForeignIndexField, IndexField
 from patchframe.dataset.identity import primary_index_field
 from patchframe.dataset.schema import Schema
 from patchframe.dataset.state import DatasetState
-from patchframe.ops.base import MISSING, Operator, PlanConsumerMixin
+from patchframe.ops.base import MISSING, ContextEffect, Operator, OperatorCall, PlanConsumerMixin
 from patchframe.ops.builtin._composition import normalize_field_names, normalize_table_to_schema
 from patchframe.ops.transitions import (
     Cardinality,
     CouplingsTransition,
     IndexIdentityTransition,
+    PerRowIndependence,
     SchemaTransition,
     SourcesTransition,
     TableTransition,
@@ -41,6 +42,7 @@ class explode(PlanConsumerMixin, Operator):
         index_identity=IndexIdentityTransition.inherit(input="plan"),
     )
     cardinality = Cardinality.EXPAND
+    per_row_independent = PerRowIndependence.INDEPENDENT
 
     def __call__(
         self,
@@ -50,6 +52,30 @@ class explode(PlanConsumerMixin, Operator):
         foreign_index_field: str | None = None,
         overlay_fields: str | Iterable[str] | None = None,
     ) -> Dataset:
+        return Operator.__call__(
+            self,
+            source,
+            plan,
+            foreign_index_field=foreign_index_field,
+            overlay_fields=overlay_fields,
+        )
+
+    def normalize_call(
+        self,
+        source: Dataset | Any = MISSING,
+        plan: Dataset | Any = MISSING,
+        *,
+        foreign_index_field: str | None = None,
+        overlay_fields: str | Iterable[str] | None = None,
+    ) -> OperatorCall:
+        self._assert_field_handles_allowed(
+            source,
+            plan,
+            {
+                "foreign_index_field": foreign_index_field,
+                "overlay_fields": overlay_fields,
+            },
+        )
         dataset_context = self.resolve_dataset_context()
         if plan is MISSING:
             if dataset_context is None or not isinstance(source, Dataset):
@@ -62,6 +88,32 @@ class explode(PlanConsumerMixin, Operator):
             source = dataset_context.dataset
         if not isinstance(source, Dataset) or not isinstance(plan, Dataset):
             raise TypeError("explode requires a source Dataset and a plan Dataset.")
+
+        context_effects: tuple[ContextEffect, ...] = ()
+        if dataset_context is not None and source is dataset_context.dataset:
+            context_effects = (
+                ContextEffect(
+                    context=dataset_context,
+                    anchor=source,
+                    effect="advance",
+                ),
+            )
+        return OperatorCall(
+            operator=self,
+            datasets=(source, plan),
+            states=(source.state, plan.state),
+            kwargs={
+                "foreign_index_field": foreign_index_field,
+                "overlay_fields": overlay_fields,
+            },
+            context_effects=context_effects,
+        )
+
+    def run(self, call: OperatorCall, _) -> Dataset:
+        source, plan = call.datasets
+        kwargs = dict(call.kwargs)
+        foreign_index_field = kwargs["foreign_index_field"]
+        overlay_fields = kwargs["overlay_fields"]
 
         self.validate_plan_dataset(plan)
         source_index_field = self.resolve_plan_foreign_index(
@@ -106,9 +158,15 @@ class explode(PlanConsumerMixin, Operator):
             ),
             source_manager=source.source_manager,
         )
-        if dataset_context is not None and source is dataset_context.dataset:
-            dataset_context.adopt(result)
         return result
+
+    def validate_result(self, call: OperatorCall, result: Any) -> None:
+        if not isinstance(result, Dataset):
+            raise TypeError(
+                f"{self.name}: expected run() to return a Dataset, got "
+                f"{type(result).__name__}."
+            )
+        result.schema.validate_table(result.table)
 
 
 def _exploded_schema(source: DatasetState, plan: DatasetState) -> Schema:

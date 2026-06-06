@@ -574,12 +574,12 @@ accessors.
   mode mapping could silently produce wrong aspect values. Mitigation:
   Phase 3 tests cover every `(aspect, mode)` pair in isolation; Phase 4
   / 5 verify the full suite stays green through the rewrite.
-- **Custom operators that override `__call__`.** They bypass the
-  dispatch helper entirely (today and after). The grounding-table
-  declarations for those operators still bind contractually (the
-  future contract suite verifies them). No behavior change in this
-  plan, but worth noting that the bold dispatch helps only operators
-  that go through `_apply` / `_compose`.
+- **Custom operator `run` paths.** Operators such as `explode` or dispatchers
+  such as `concat` may normalize through `OperatorCall` and still bypass the
+  aspect dispatch helper for part of execution. The grounding-table
+  declarations for those operators still bind contractually (the future
+  contract suite verifies them). Worth noting that aspect dispatch helps only
+  operators whose `run` path calls `compute_output_state`.
 - **One-extra-layer overhead.** Registry lookup per aspect adds a
   constant cost. Negligible per call, but worth measuring once on the
   concat / merge / consume benchmarks at Phase 5 boundary to confirm

@@ -11,13 +11,19 @@ import pandas as pd
 
 from patchframe.data.dimensioned_slice_array import DimensionedSliceArray
 from patchframe.data.windows import AxisWindow
+from patchframe.dataset.context import (
+    FieldHandle,
+    resolve_field_name,
+    resolve_field_selectors,
+)
 from patchframe.dataset.couplings import BindDimensions
 from patchframe.dataset.dataset import Dataset
 from patchframe.dataset.fields import (
     DimensionedSliceField,
     DimensionField,
 )
-from patchframe.ops.base import PlanOperator
+from patchframe.ops.base import OperatorCall, PlanOperator
+from patchframe.ops.transitions import PerRowIndependence
 from patchframe.ops.builtin.assign import assign
 from patchframe.ops.builtin.make_plan import make_plan
 
@@ -41,29 +47,107 @@ class window_expansion_plan(PlanOperator):
 
     plan_index_name = PLAN_INDEX_NAME
     required_plan_fields = (SOURCE_INDEX_FIELD, PLAN_SLICE_FIELD)
+    field_handle_inputs = ("field", "bindings")
+    per_row_independent = PerRowIndependence.INDEPENDENT
 
     def __call__(
         self,
         dataset: Dataset,
         *,
         windows: Mapping[str, AxisWindow],
-        field: str | None = None,
+        field: str | FieldHandle | None = None,
         bindings: Any | None = None,
         source_index_field: str = SOURCE_INDEX_FIELD,
         slice_field: str = PLAN_SLICE_FIELD,
         plan_index_name: str = PLAN_INDEX_NAME,
     ) -> Dataset:
+        return PlanOperator.__call__(
+            self,
+            dataset,
+            windows=windows,
+            field=field,
+            bindings=bindings,
+            source_index_field=source_index_field,
+            slice_field=slice_field,
+            plan_index_name=plan_index_name,
+        )
+
+    def normalize_call(
+        self,
+        dataset: Dataset,
+        *,
+        windows: Mapping[str, AxisWindow],
+        field: str | FieldHandle | None = None,
+        bindings: Any | None = None,
+        source_index_field: str = SOURCE_INDEX_FIELD,
+        slice_field: str = PLAN_SLICE_FIELD,
+        plan_index_name: str = PLAN_INDEX_NAME,
+    ) -> OperatorCall:
+        if not isinstance(dataset, Dataset):
+            raise TypeError("window_expansion_plan expects a Dataset as the first argument.")
+        reference_contexts = self._assert_field_handles_allowed(field, bindings)
+        self._reject_unresolved_field_handles(
+            dataset,
+            windows,
+            source_index_field,
+            slice_field,
+            plan_index_name,
+        )
+        if len(reference_contexts) > 1:
+            raise ValueError(
+                "window_expansion_plan: FieldHandles must share one DatasetContext."
+            )
+        if reference_contexts and dataset is not reference_contexts[0].dataset:
+            raise ValueError(
+                "window_expansion_plan: FieldHandles resolve against their "
+                "DatasetContext's current dataset snapshot."
+            )
+        normalized_field = (
+            resolve_field_name(field, dataset.schema, op_name=self.name)
+            if field is not None
+            else None
+        )
+        normalized_bindings = (
+            resolve_field_selectors(bindings, dataset.schema, op_name=self.name)
+            if bindings is not None
+            else None
+        )
+        return OperatorCall(
+            operator=self,
+            datasets=(dataset,),
+            states=(dataset.state,),
+            kwargs={
+                "windows": windows,
+                "field": normalized_field,
+                "bindings": normalized_bindings,
+                "source_index_field": source_index_field,
+                "slice_field": slice_field,
+                "plan_index_name": plan_index_name,
+            },
+            reference_contexts=reference_contexts,
+            variant="window_expansion",
+        )
+
+    def run(self, call: OperatorCall, _) -> Dataset:
+        dataset = call.datasets[0]
+        kwargs = dict(call.kwargs)
+        windows = kwargs["windows"]
+        field = kwargs["field"]
+        bindings = kwargs["bindings"]
+        source_index_field = kwargs["source_index_field"]
+        slice_field = kwargs["slice_field"]
+        plan_index_name = kwargs["plan_index_name"]
+
         if (field is None) == (bindings is None):
             raise ValueError("window_expansion_plan requires exactly one of field or bindings.")
         if not windows:
             raise ValueError("window_expansion_plan requires at least one window.")
         _warn_if_planning_over_plan(dataset)
 
-        extent_array = (
-            _slice_array_from_field(dataset, field)
-            if field is not None
-            else _slice_array_from_bindings(dataset, bindings)
-        )
+        if field is not None:
+            extent_array = _slice_array_from_field(dataset, field)
+        else:
+            extent_array = _slice_array_from_bindings(dataset, bindings)
         parent_positions, slices = extent_array.explode_windows(windows)
         metadata = _window_expansion_plan_metadata(
             dataset,
@@ -97,6 +181,16 @@ class window_expansion_plan(PlanOperator):
             required_plan_fields=(source_index_field, slice_field),
         )
         return result
+
+    def plan_validation_options(self, call: OperatorCall) -> dict[str, Any]:
+        kwargs = dict(call.kwargs)
+        return {
+            "plan_index_name": kwargs.get("plan_index_name", PLAN_INDEX_NAME),
+            "required_plan_fields": (
+                kwargs.get("source_index_field", SOURCE_INDEX_FIELD),
+                kwargs.get("slice_field", PLAN_SLICE_FIELD),
+            ),
+        }
 
 
 def _slice_array_from_field(dataset: Dataset, field: str) -> DimensionedSliceArray:

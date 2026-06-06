@@ -12,8 +12,9 @@ a fresh ``Dataset`` with no cached engine.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pandas as pd
@@ -24,6 +25,9 @@ from patchframe.dataset.coupling_engine import CouplingEngine
 from patchframe.dataset.extension import _FIELD
 from patchframe.dataset.state import DatasetState
 
+if TYPE_CHECKING:
+    from patchframe.dataset.context import DatasetContext, FieldHandle, FieldSelection
+
 
 @dataclass(slots=True)
 class Dataset:
@@ -32,6 +36,7 @@ class Dataset:
     state: DatasetState
     source_manager: SourceManager | None = None
     _engine: CouplingEngine | None = field(default=None, init=False, repr=False)
+    _context: DatasetContext | None = field(default=None, init=False, repr=False)
 
     @property
     def schema(self):
@@ -64,6 +69,44 @@ class Dataset:
         from patchframe.dataset.context import DatasetContext
 
         return DatasetContext(self)
+
+    def field(self, name: str) -> FieldHandle:
+        """Return a context-bound handle for one field of this dataset.
+
+        The entry bridge from the eager surface (``Dataset``) to the handle
+        surface. Repeated ``field``/``fields`` calls on the same dataset share
+        one context, so several handles can be passed to a single operator.
+        """
+
+        return self._authoring_context().field(name)
+
+    def fields(self, names: Iterable[str]) -> FieldSelection:
+        """Return a :class:`FieldSelection` of handles sharing one context."""
+
+        from patchframe.dataset.context import FieldSelection
+
+        context = self._authoring_context()
+        return FieldSelection(tuple(context.field(name) for name in names))
+
+    def _authoring_context(self) -> DatasetContext:
+        """Return the authoring context for handles minted off this facade.
+
+        Prefers an ambient ``DatasetContext`` already pointing at this dataset
+        (so ``ds.field(...)`` agrees with ``ctx.field(...)`` inside a ``with``
+        block); otherwise lazily builds one cached on the facade. The context
+        threads forward through lazy operations (a lazy op propagates the
+        context); eager operations fork by returning a new facade with its own
+        fresh context. It is therefore not re-pinned to ``self``.
+        """
+
+        from patchframe.dataset.context import DatasetContext, get_active_dataset_context
+
+        ambient = get_active_dataset_context()
+        if ambient is not None and ambient.dataset is self:
+            return ambient
+        if self._context is None:
+            self._context = DatasetContext(self)
+        return self._context
 
     def __getitem__(self, key: Any) -> pd.Series | dict[str, Any]:
         """Column access or coupling-aware row access.

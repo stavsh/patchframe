@@ -35,5 +35,7 @@ def test_top_level_exports_user_facing_operators():
     assert pf.bind_dimensions
     assert pf.bind_slice
     assert pf.window_expansion_plan
+    assert pf.ContextEffect
+    assert pf.OperatorCall
     assert pf.PlanOperator
     assert pf.register_aspect_handler

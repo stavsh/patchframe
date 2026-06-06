@@ -14,11 +14,12 @@ from patchframe.dataset.field_composition import (
     MergedField,
     compose_column,
 )
-from patchframe.dataset.fields import Field, ForeignIndexField, IndexField
+from patchframe.dataset.fields import BundleField, Field, ForeignIndexField, IndexField
 from patchframe.dataset.identity import primary_index_identity
 from patchframe.dataset.schema import Schema
 from patchframe.dataset.state import DatasetState
 from patchframe.ops.base import CompositionOperator
+from patchframe.ops.signature import DatasetInput, FieldOutput, FieldReturn
 from patchframe.ops.builtin._composition import (
     derive_composed_couplings,
     normalize_collision,
@@ -27,6 +28,7 @@ from patchframe.ops.builtin._composition import (
 from patchframe.ops.transitions import (
     CouplingsTransition,
     IndexIdentityTransition,
+    PerRowIndependence,
     SchemaTransition,
     SourcesTransition,
     TableTransition,
@@ -48,6 +50,10 @@ class merge(CompositionOperator):
         sources=SourcesTransition.derive(),
         index_identity=IndexIdentityTransition.inherit(input=2),
     )
+    per_row_independent = PerRowIndependence.DEPENDENT
+    operands = DatasetInput(variadic=True)
+    out = FieldOutput(field_type=BundleField)
+    returns = FieldReturn()
 
     def apply_schema(
         self,

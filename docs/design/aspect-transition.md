@@ -444,11 +444,13 @@ The full set of built-in operators under the new ontology:
 Bolded entries are the explicit exceptions to derive — every other non-
 construct/custom aspect collapses through the resolution table.
 
-Operators that override `__call__` (`join`, `merge`, `concat_rows`,
-`concat_columns`, `window_expansion_plan`, `explode`, `concat`) bypass the
-framework dispatch above. Their declarations remain contractually binding —
-the operator must honor them in its own implementation — and the contract
-suite verifies that regardless of dispatch.
+Operators now route through `OperatorCall` before execution. Most
+`DatasetOperator`, `PlanOperator`, and `CompositionOperator` implementations
+then use the aspect dispatch above. Operators with custom execution, such as
+`explode` and the `concat` dispatcher, still normalize first and express their
+special behavior in `run`. Declarations remain contractually binding — the
+operator must honor them in its own implementation — and the contract suite
+verifies that regardless of dispatch.
 
 `explode` declares `schema=custom` honestly: its schema transformation
 (inherit source fields, prepend plan index) is not one of the structural

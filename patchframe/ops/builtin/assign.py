@@ -17,7 +17,12 @@ from patchframe.dataset.fields import Field, ValueField
 from patchframe.dataset.schema import Schema
 from patchframe.dataset.state import DatasetState
 from patchframe.ops.base import MISSING, DatasetOperator
-from patchframe.ops.transitions import Cardinality, SchemaTransition, TransitionPlan
+from patchframe.ops.transitions import (
+    Cardinality,
+    PerRowIndependence,
+    SchemaTransition,
+    TransitionPlan,
+)
 
 
 class assign(DatasetOperator):
@@ -38,6 +43,7 @@ class assign(DatasetOperator):
 
     transitions = TransitionPlan(schema=SchemaTransition.extend())
     cardinality = Cardinality.PRESERVE
+    per_row_independent = PerRowIndependence.INDEPENDENT
 
     def __call__(
         self,

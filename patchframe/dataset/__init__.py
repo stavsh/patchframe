@@ -2,6 +2,7 @@
 
 from patchframe.dataset.coupling_engine import CouplingEngine
 from patchframe.dataset.couplings import (
+    ApplyOperator,
     BindDimensions,
     BindSlice,
     Coupling,
@@ -12,6 +13,7 @@ from patchframe.dataset.couplings import (
 from patchframe.dataset.context import (
     DatasetContext,
     FieldHandle,
+    FieldSelection,
     get_active_dataset_context,
 )
 from patchframe.dataset.dataset import Dataset
@@ -28,6 +30,7 @@ from patchframe.dataset.field_composition import (
     resolve_column_collision,
 )
 from patchframe.dataset.fields import (
+    BundleField,
     DataField,
     DimensionField,
     DimensionedSliceField,
@@ -54,8 +57,10 @@ from patchframe.dataset.schema import Schema
 from patchframe.dataset.state import DatasetState
 
 __all__ = [
+    "ApplyOperator",
     "BindDimensions",
     "BindSlice",
+    "BundleField",
     "ColumnCollisionStrategy",
     "CompositionContext",
     "Coupling",
@@ -70,6 +75,7 @@ __all__ = [
     "DimensionedSliceField",
     "Field",
     "FieldHandle",
+    "FieldSelection",
     "FieldCompositionPolicy",
     "FieldRef",
     "ForeignIndexField",

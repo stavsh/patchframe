@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 import pandas as pd
@@ -23,7 +24,7 @@ from patchframe.dataset.identity import (
 )
 from patchframe.dataset.schema import Schema
 from patchframe.dataset.state import DatasetState
-from patchframe.ops.base import CompositionOperator
+from patchframe.ops.base import CompositionOperator, OperatorCall
 from patchframe.ops.builtin._composition import (
     derive_composed_couplings,
     normalize_collision,
@@ -34,6 +35,7 @@ from patchframe.ops.transitions import (
     Cardinality,
     CouplingsTransition,
     IndexIdentityTransition,
+    PerRowIndependence,
     SchemaTransition,
     SourcesTransition,
     TableTransition,
@@ -52,6 +54,7 @@ class concat_rows(CompositionOperator):
         index_identity=IndexIdentityTransition.coalesce(),
     )
     cardinality = Cardinality.EXPAND
+    per_row_independent = PerRowIndependence.INDEPENDENT
 
     def apply_schema(self, *states: DatasetState, **_: Any) -> Schema:
         _require_states(states, self.name)
@@ -113,6 +116,7 @@ class concat_columns(CompositionOperator):
     """Compose datasets by columns, aligning rows by pandas index."""
 
     cardinality = Cardinality.PRESERVE
+    per_row_independent = PerRowIndependence.UNKNOWN  # independent only when pre-aligned
 
     def apply_schema(
         self,
@@ -203,15 +207,30 @@ class concat(CompositionOperator):
     """Dispatch to ``concat_rows`` or ``concat_columns``."""
 
     def __call__(self, *datasets: Dataset, axis: int = 0, **kwargs: Any) -> Dataset:
+        return super().__call__(*datasets, axis=axis, **kwargs)
+
+    def normalize_call(
+        self,
+        *datasets: Dataset,
+        axis: int = 0,
+        **kwargs: Any,
+    ) -> OperatorCall:
+        if axis not in (0, 1):
+            raise ValueError("concat: axis must be 0 or 1.")
+        call = super().normalize_call(*datasets, **kwargs)
+        return replace(
+            call,
+            variant="rows" if axis == 0 else "columns",
+            context_effects=(),
+        )
+
+    def run(self, call: OperatorCall, _) -> Dataset:
         params = {}
         dataset_context = self.resolve_param("dataset_context")
         if dataset_context is not None:
             params["dataset_context"] = dataset_context
-        if axis == 0:
-            return concat_rows.instance(**params)(*datasets, **kwargs)
-        if axis == 1:
-            return concat_columns.instance(**params)(*datasets, **kwargs)
-        raise ValueError("concat: axis must be 0 or 1.")
+        operator = concat_rows if call.variant == "rows" else concat_columns
+        return operator.instance(**params)(*call.datasets, **dict(call.kwargs))
 
     def apply_schema(self, *states: DatasetState, **kwargs: Any) -> Schema:
         raise NotImplementedError("concat dispatches in __call__.")

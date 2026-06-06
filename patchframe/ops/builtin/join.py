@@ -15,11 +15,12 @@ from patchframe.dataset.fields import DimensionedSliceField, ForeignIndexField, 
 from patchframe.dataset.identity import primary_index_field
 from patchframe.dataset.schema import Schema
 from patchframe.dataset.state import DatasetState
-from patchframe.ops.base import CompositionOperator
+from patchframe.ops.base import CompositionOperator, OperatorCall
 from patchframe.ops.builtin._composition import normalize_field_names
 from patchframe.ops.transitions import (
     CouplingsTransition,
     IndexIdentityTransition,
+    PerRowIndependence,
     SchemaTransition,
     SourcesTransition,
     TableTransition,
@@ -83,6 +84,7 @@ class join(CompositionOperator):
     """Build a join-plan dataset mapping rows from two input datasets."""
 
     advances_dataset_context = False
+    per_row_independent = PerRowIndependence.DEPENDENT
     transitions = TransitionPlan(
         schema=SchemaTransition.construct(),
         table=TableTransition.construct(),
@@ -98,8 +100,17 @@ class join(CompositionOperator):
         on: str | Iterable[str] | None = None,
         how: JoinHow | None = None,
     ):
+        return super().__call__(*datasets, strategy=strategy, on=on, how=how)
+
+    def normalize_call(
+        self,
+        *datasets,
+        strategy: JoinStrategy | None = None,
+        on: str | Iterable[str] | None = None,
+        how: JoinHow | None = None,
+    ) -> OperatorCall:
         resolved = _resolve_strategy(strategy=strategy, on=on, how=how)
-        return self._compose(*datasets, strategy=resolved)
+        return super().normalize_call(*datasets, strategy=resolved)
 
     def apply_schema(
         self,

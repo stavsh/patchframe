@@ -9,7 +9,12 @@ import pandas as pd
 from patchframe.dataset.schema import Schema
 from patchframe.dataset.state import DatasetState
 from patchframe.ops.base import DatasetOperator
-from patchframe.ops.transitions import Cardinality, SchemaTransition, TransitionPlan
+from patchframe.ops.transitions import (
+    Cardinality,
+    PerRowIndependence,
+    SchemaTransition,
+    TransitionPlan,
+)
 
 
 class drop(DatasetOperator):
@@ -26,6 +31,7 @@ class drop(DatasetOperator):
 
     transitions = TransitionPlan(schema=SchemaTransition.narrow())
     cardinality = Cardinality.PRESERVE
+    per_row_independent = PerRowIndependence.INDEPENDENT
 
     def apply_schema(self, state: DatasetState, fields: list[str], **_: Any) -> Schema:
         unknown = [f for f in fields if not state.schema.has(f)]

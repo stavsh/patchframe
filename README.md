@@ -175,7 +175,7 @@ Internally, patchframe draws on QFT-inspired terminology:
 
 ## Operator families
 
-Three operator base classes cover the full construction and transformation surface:
+Four operator base classes cover the full construction and transformation surface:
 
 ### `DatasetOperator`
 
@@ -185,11 +185,27 @@ Unary dataset-to-dataset transformer. Subclasses declare which aspects they modi
 
 Creates a dataset from external input. Subclasses must implement `generate_source_info` and `build`. The framework injects the source info into the state returned by `build` before assembling the `Dataset`.
 
+### `PlanOperator`
+
+Creates explicit plan datasets. Subclasses normalize their call signature into
+`OperatorCall` and return a concrete plan dataset from `run`. Plan outputs are
+sibling artifacts by default: they do not advance `DatasetContext`.
+
 ### `CompositionOperator`
 
 Combines multiple datasets into one. All three structural hooks (`apply_schema`, `apply_table`, `apply_couplings`) are required — there is no sensible default for N-ary composition. Sources are unioned by default.
 
-All three families support a full escape hatch by overriding `__call__` directly.
+Operators declare their operands and call structure through an
+`OperatorSignature`, and a shared interpreter handles `FieldHandle` inputs,
+eager/deferred dispatch, and the returned result — see
+[Lazy and eager duality](#lazy-and-eager-duality). Execution hooks (`apply_*`)
+receive normalized datasets and local field selectors only. Dataset-level
+operators such as `concat(...)` take whole-dataset operands; pass `ctx.dataset`
+when the dataset itself is the operand.
+
+All operator families route through `OperatorCall`. `field_handle_inputs` is the
+legacy declaration seam, superseded by the signature for migrated operators;
+operators no longer hand-write `__call__` for handle dispatch.
 
 ### Transition ontology TODO
 
@@ -205,260 +221,79 @@ according to its declaration. This should let extension authors verify custom
 operators against patchframe's structural invariants without hand-writing every
 contract test.
 
-## Composition policies
+## Lazy and eager duality
 
-This section documents the intended composition model. The concat behavior is
-implemented first; the join/merge split is the design target that merge should
-move toward.
+Every transform operator has two call forms, selected by operand type — there is
+no separate lazy API and no `.lazy()` switch:
 
-Composition in `patchframe` is not just dataframe concatenation. A composition
-operator must combine:
+- **Eager:** a `Dataset` operand produces *and* applies the operation now,
+  returning a new `Dataset`.
+- **Deferred:** a `FieldHandle` operand records the operation and returns a
+  handle, so calls chain; `consume` / `collect` applies it later.
 
-- table values
-- typed schema fields
-- coupling declarations
-- source/provenance records
+```python
+kept = where(ds, lambda df: df["score"] > 0)       # eager    -> Dataset
+kept = where(b.field("cell"), pred, out="kept")     # deferred -> FieldHandle
+result = kept.collect()                              # apply now -> Dataset
+```
 
-This is the main reason patchframe composition is stricter than `pandas`.
-Pandas can keep duplicate column names, append suffixes, or silently widen
-dtypes. Patchframe has to preserve a predictable dataset schema and coupling
-graph, so ambiguous cases raise by default.
+Handles come from the dataset entry bridge — `ds.field("image")` /
+`ds.fields(["a", "b"])` — returning context-bound `FieldHandle` /
+`FieldSelection` values that follow a field's *identity* across operators (not
+its name). A handle resolves only inside its owning `DatasetContext`. A deferred
+op threads one context forward so chains compose; an eager op forks a new
+`Dataset` facade.
 
-### Policy layers
+### Where a deferred operation lives
 
-Composition is organized as several policy layers:
+A deferred operation is recorded as a coupling. Operators that only add or fill a
+field — schema `preserve`/`extend`, one output row per input row, and
+per-row-independent (together: `coupling_able`) — record it directly on the
+dataset (same level). Everything else (`where`, `merge`, `concat`, …) has no
+honest same-level deferred form, so it lands on a one-row **bundle**: a
+`BundleField` carrier whose cells hold whole datasets, plus an `ApplyOperator`
+coupling that runs the operator between the cells (per row = per fiber). The
+flat↔bundle morphisms are themselves ordinary operators:
 
-1. **Preparation policy**: rename, drop, or prefix fields before composition.
-   This must rewrite schema fields, table columns, and coupling `FieldRef`
-   references together. Automatic preparation is not implemented yet; rename
-   collisions currently raise.
-2. **Row field compatibility policy**: decide whether fields with the same name
-   can be stacked by rows.
-3. **Column bucket policy**: decide how fields behave when they coexist in the
-   same output schema, even if their names do not collide. Primary-field
-   downgrade is a bucket policy.
-4. **Column collision value policy**: decide how same-name table columns are
-   resolved when both sides contribute values.
-5. **Coupling policy**: decide which couplings survive composition and whether
-   coupling references must be rewritten.
-6. **Join policy**: decide which rows from two datasets correspond. This is
-   intentionally separate from merge.
+- `bundle(left=…, right=…)` — lift datasets into `BundleField` cells.
+- `extract(b.field("left"))` — pull one cell back out.
+- `flatten(b)` — row-stack every cell (the total space).
 
-### Field policies
+`FieldHandle.collect()` is the terminal that materializes a pending field; it is
+the single carve-out to "handles do not execute".
 
-Field composition is implemented through an external policy registry. The
-current built-in policies are:
+### Declaring operands
 
-- `Field`: row stacking requires the same concrete field type and same dtype.
-  A type or dtype mismatch raises `TypeError`.
-- `ValueField`: row stacking requires the same concrete field type, but dtype
-  differences are allowed. If dtypes differ, the output field has `dtype=None`
-  and pandas owns the resulting value dtype.
-- `DimensionField`: row stacking and key coalescing require the same concrete
-  field type, same dtype, and same `dimension` object. Dimension mismatch raises
-  `TypeError`.
-- `IndexField`: the first output index remains an `IndexField`. Additional
-  dataset indexes are downgraded into nullable, table-backed
-  `IndexColumnField` fields.
+Operators declare their call structure dataclass-style, as class attributes the
+metaclass collects into an `OperatorSignature` (the same mechanism that collects
+`Parameter`s):
 
-All normal table columns are nullable by design. `IndexField` is special because
-it represents the DataFrame index itself. `IndexColumnField` stores index values
-that were downgraded into an ordinary table column during composition.
-`ForeignIndexField` is the table-backed index-reference field for labels that
-point to another dataset's index identity.
+- `DatasetInput` — a whole-dataset operand (a `Dataset`, or a bundle handle for
+  the deferred per-fiber arm); `variadic=True` for N operands (`merge`).
+- `FieldInput` — a single field operand (a typed handle or a name);
+  `output=True` marks a field that is also an in-place output
+  (`bind_slice.data_field`).
+- `SelectionInput` — a multi-field operand.
+- `ParamInput` — a per-call positional-or-keyword parameter that is *not* an
+  operand (a predicate, a collision strategy). Distinct from `Parameter`, which
+  is instance-level behavioural config.
+- `FieldOutput` — a caller-named produced field (`merge(…, out="merged")`); the
+  chaining point for lifting operators.
+- `returns` — `FieldReturn` / `SelectionReturn` / `DatasetReturn`, the eager↔lazy
+  seam. A handle return marks a coupling-producer whose deferred arm hands back a
+  handle; `DatasetReturn` is for eager-only operators and the bundle entry/exit
+  bridges.
 
-### Column collision values
+A shared interpreter reads the signature, binds the call, selects eager vs
+deferred by operand type and same-level vs bundle by `coupling_able`, and returns
+the declared handle or `Dataset`. Operators implement only their `apply_*` hooks;
+the duality is provided for free.
 
-When two table columns map to the same output field, the value policy is
-configured with `ColumnCollisionStrategy`:
-
-- `mode="error"`: raise on collision. This is the default.
-- `mode="keep"`: keep the chosen side and discard the other side.
-- `mode="update_missing"`: start with the chosen side and fill missing values
-  from the other side.
-- `mode="coalesce"`: currently equivalent to `update_missing`.
-- `mode="rename"`: raise for now. Rename/prefix/drop preparation is not
-  implemented yet.
-
-`side="left"` chooses the existing/left column. `side="right"` chooses the
-incoming/right column.
-
-`on_conflict="raise"` raises when both sides have non-null, unequal values in
-the same row. `on_conflict="keep_chosen"` keeps the chosen side in that case.
-
-The important difference from pandas is that patchframe does not use automatic
-suffixes as the default conflict resolution. A same-name field collision is a
-schema decision, not just a dataframe-label issue.
-
-### Coupling policy
-
-Couplings are declarations over field names. If a composition preparation step
-renames a field, coupling `FieldRef`s must be rewritten through the same mapping.
-The existing `rename` operator already does this through
-`CouplingSet.rewrite_field_names(...)`. Composition rename/prefix preparation
-must use the same rule.
-
-Current coupling defaults:
-
-- Column concat: union coupling sets after any field-reference rewrites. Exact
-  duplicate couplings are deduplicated. Coupling-specific simplification is not
-  implemented yet.
-- Row concat: preserve couplings only when all inputs have exactly the same
-  `CouplingSet`. If coupling sets differ and any are non-empty, row concat
-  raises. The user should consume the coupled fields first, then reapply
-  couplings after concat.
-- Merge: expected to use conservative coupling rules over the composed output.
-  Coupling-specific merge policies are intentionally left as future extension
-  points.
-
-The row-concat rule is stricter than pandas because pandas has no equivalent of
-a coupling graph. A single output `CouplingSet` applies to every row. Blindly
-unioning different input couplings could make a coupling from one dataset affect
-rows that came from another dataset.
-
-### `concat_rows`
-
-`concat_rows` stacks datasets by rows.
-
-Schema behavior:
-
-- Fields are matched by name.
-- Field compatibility is checked through the row field policy.
-- Missing columns are added as nullable columns filled with missing values.
-- Primary fields are bucketed through column policy; later primaries of the
-  same field type are downgraded.
-- Additional dataset indexes become `IndexColumnField` columns.
-
-Raises:
-
-- Raises if no datasets are provided.
-- Raises if same-name fields are incompatible by policy.
-- Raises if `DimensionField` dimensions differ.
-- Raises if non-empty coupling sets differ across inputs.
-
-Differences from pandas:
-
-- Pandas row concat accepts many dtype coercions. Patchframe only relaxes dtype
-  where field policy allows it, currently `ValueField`.
-- Pandas has no dimension compatibility check.
-- Pandas does not model couplings, so it cannot detect unsafe coupling unions.
-
-### `concat_columns`
-
-`concat_columns` composes datasets by columns and aligns rows by DataFrame
-index.
-
-Schema behavior:
-
-- Fields are added in input order.
-- Unique field names still pass through bucket policy.
-- Primary downgrade can happen even without name collision.
-- A second `IndexField` becomes an `IndexColumnField`; its values are
-  materialized from that input index into the output table.
-- Same-name fields are handled by `ColumnCollisionStrategy`.
-
-Raises:
-
-- Raises if no datasets are provided.
-- Raises on same-name collisions with the default `mode="error"`.
-- Raises for `mode="rename"` because automatic rename preparation is not
-  implemented yet.
-- Raises when `on_conflict="raise"` and both sides contain unequal non-null
-  values.
-- Raises if field policies reject the collision field composition.
-
-Differences from pandas:
-
-- Pandas `concat(axis=1)` can produce duplicate column names. Patchframe schemas
-  cannot.
-- Pandas does not have primary field buckets. Patchframe downgrades later
-  primary fields even when names differ.
-- Pandas treats indexes only as alignment labels. Patchframe also models index
-  identity in the schema, so secondary indexes are explicit table columns.
-
-### `join`
-
-Join should be separate from merge. A join operator decides row correspondence
-and outputs a simple dataset representing the mapping between two input
-datasets.
-
-The join-plan dataset has its own unique row index, usually represented by
-`IndexField(name="join_id")`. Its canonical mapping columns should be index
-labels from the input datasets:
-
-- `left_index`: nullable index value into the left dataset
-- `right_index`: nullable index value into the right dataset
-
-Optional columns may include:
-
-- `left_pos` and `right_pos` as cached positional lookups
-- score, rank, distance, overlap, or strategy-specific metadata
-
-Index labels are canonical because dataset indexes are unique by invariant.
-This lets a join-plan dataset behave like any other patchframe dataset: users
-can filter it, concatenate it with other compatible join plans, inspect it,
-persist it, and then pass the resulting plan to merge. Positional columns can
-still be useful as an optimization, but they are not the semantic identity of
-the join.
-
-Possible join strategies:
-
-- equality on one or more fields
-- index alignment
-- left, right, inner, or outer inclusion rules
-- nearest temporal match
-- interval overlap
-- spatial join in an extension package
-- scored or ranked candidate retrieval
-
-Raises:
-
-- Raises if a strategy references missing fields.
-- Raises if a strategy requires compatible field semantics and the fields are
-  incompatible.
-- Raises if a strategy cannot represent the requested match type without unique
-  row identity.
-
-Difference from pandas:
-
-- Pandas hides the row-matching plan inside `merge`. Patchframe exposes it as a
-  dataset so users can inspect, filter, concatenate, visualize, cache, sample,
-  or reuse the match plan before materializing a merge.
-
-### `merge`
-
-Merge should consume two datasets and a join-plan dataset. It should not decide
-which rows match.
-
-Expected merge behavior:
-
-- Validate that the join plan contains valid `left_index` and `right_index`
-  mappings.
-- Gather rows from the left and right datasets by unique index label according
-  to the join plan.
-- Compose output fields through column bucket policy.
-- Resolve same-name non-key fields through `ColumnCollisionStrategy`.
-- Apply conservative coupling policy.
-
-Raises:
-
-- Raises if the join plan is missing required mapping columns.
-- Raises if non-null index labels in the join plan are missing from the
-  corresponding input dataset.
-- Raises on same-name collisions with default `mode="error"`.
-- Raises for `mode="rename"` until rename/prefix preparation is implemented.
-- Raises when field policies reject a composed field.
-- Raises when coupling policy cannot preserve semantics safely.
-
-Differences from pandas:
-
-- Pandas `merge` combines join planning and row materialization in one call.
-  Patchframe separates them.
-- Pandas allows duplicate index labels. Patchframe requires unique dataset
-  indexes, so merge can use index labels as stable row identity.
-- Pandas automatically suffixes overlapping non-key columns. Patchframe raises
-  unless an explicit collision policy resolves the collision.
-- Pandas does not validate typed schema semantics or coupling safety.
+Currently wired: `where`, `merge`, `bind_slice`, `bind_materialize`,
+`bind_dimensions`. The remaining transforms (`rename`/`drop`/`keep`/`explode`/
+`concat`/`set_index`/`window_expansion_plan`) keep the eager form and gain the
+deferred arm as they migrate. Creation and plan operators are eager-only entry
+points; deferred creation is a future workload-gated tier.
 
 ## Composition policies
 
@@ -825,6 +660,12 @@ Unary operators advance automatically. Composition operators advance only
 when the current context dataset is passed as an explicit input. `explode(plan)`
 uses the active context dataset as its source and advances that context.
 
+Field handles are intentionally not generic dataset pointers. Use them where an
+operator parameter names a specific field, such as `bind_slice(patch, image)`,
+`consume(image)`, `make_plan(ctx.field("item_id"), ...)`, or
+`window_expansion_plan(ctx.dataset, field=ctx.field("extent"), ...)`. Use
+`ctx.dataset` for whole-dataset operations such as `concat(...)`.
+
 Keeping the source mapping column, for example `source_index`, may be useful
 for traceability but changes the output schema. This is a concrete case where
 an operator's transition contract may depend on user flags, so it should wait
@@ -851,16 +692,6 @@ that can yield normal plan datasets or plan chunks.
 For now, the batch-friendly constraint is simple: plan application should accept
 any valid plan dataset. Future batching can feed smaller plan datasets into the
 same apply operator without changing the meaning of the operation.
-
-## First concrete operator
-
-- `make_from_dataframe` — turns an existing dataframe and explicit schema into a dataset
-
-## Planned first sources
-
-- `MemorySource`
-- `DataFrameSource`
-- `MockSource`
 
 ## Current Development Status
 
@@ -889,7 +720,8 @@ baseline:
 - `window_expansion_plan` produces concrete window expansion plans with
   `source_index` and columnar `slice` fields. It can plan from
   `DimensionedSliceField` extents or explicit `DimensionField` bindings, with
-  window expansion handled by `DimensionedSliceArray`.
+  window expansion handled by `DimensionedSliceArray`. Its field-scoped
+  `field` and `bindings` parameters accept `FieldHandle`s.
 - `make_plan` and `assign` provide the low-ceremony path for sparse or
   extension-owned plan construction. Dense `window_expansion_plan` uses the
   same primitives.
@@ -912,6 +744,17 @@ baseline:
   `window_expansion_plan`, scoped `DimensionJoin` selects windows overlapping
   mask boxes, and `bind_inria_patches` applies filtered plans through `explode`
   before binding deferred GeoTIFF window reads.
+- Transform operators expose a lazy ↔ eager duality through operand-type
+  dispatch: a `Dataset` operand applies eagerly and returns a `Dataset`; a
+  `FieldHandle` operand defers and returns a handle. A signature-driven
+  interpreter (`OperatorSignature` with `DatasetInput` / `FieldInput` /
+  `SelectionInput` / `ParamInput` / `FieldOutput` slots) routes same-level
+  couplings vs `BundleField` bundles by the derived `coupling_able` test, so
+  operators get both arms from declarations alone — no hand-written `__call__`
+  dispatch. Wired on `where`, `merge`, `bind_slice`, `bind_materialize`, and
+  `bind_dimensions`; the entry/exit bridges (`bundle`/`extract`/`flatten`/
+  `collect`) and `Dataset.field()`/`fields()` complete the surface. See
+  [Lazy and eager duality](#lazy-and-eager-duality).
 
 ## Performance Direction
 
@@ -965,11 +808,21 @@ Known constraints before promoting `engine="polars"` into core operators:
 
 ### Field Handle Ergonomics
 
-A future user-facing layer may expose immutable symbolic field handles, for
-example through `ds.field("image")`. A field handle could carry the field name,
-field type, and owning index identity, then resolve only inside explicit
-dataset/operator contexts. This would support more fluent binding APIs without
-introducing a global pointer manager of live datasets or fields.
+The symbolic field-handle layer has landed. `ds.field("image")` /
+`ds.fields([...])` return context-bound `FieldHandle` / `FieldSelection` values
+that follow a field's identity and resolve only inside their `DatasetContext`,
+with no global pointer manager of live datasets or fields — see
+[Lazy and eager duality](#lazy-and-eager-duality).
+
+Remaining directions:
+
+- Make distinct operator call structures **explicit overloads** (in the spirit
+  of `typing.overload`) instead of one signature plus a binding interpreter; the
+  binding is already shaped to generalize to "try each overload".
+- The **lift** case for mixed `Dataset`/handle operands (mint a carrier on the
+  fly), currently an explicit error in favour of bundling first.
+- A workload-gated **deferred-creation** (`DatasetAccessor`) tier and the
+  tall/streaming bundle substrate.
 
 ### Dask Execution Extension
 

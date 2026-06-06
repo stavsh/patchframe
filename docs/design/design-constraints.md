@@ -233,9 +233,20 @@ direction:
 - **`FieldHandle` resolution stays context-bound.** Immutable symbolic field
   references carry `FieldIdentity` lineage and resolve against a
   `DatasetContext`. Current handles are runtime authoring values: they reduce
-  back to local names before couplings are stored. **No global pointer manager**
-  of live datasets or fields; ambiguity must remain explicit. A future
-  serializable `DatasetRef` for Bundle fibers remains a separate concern.
+  back to local field selectors during `normalize_call`, before execution hooks
+  run or couplings are stored. **No global pointer manager** of live datasets or
+  fields; ambiguity must remain explicit. A future serializable `DatasetRef`
+  for Bundle fibers remains a separate concern.
+- **`FieldHandle` inputs are opt-in and field-scoped.** Operators that accept
+  handles must declare the field-scoped parameters through
+  `field_handle_inputs`. A handle must not be treated as a generic selector for
+  the dataset that owns it. Dataset-level operators such as `concat(...)` should
+  require explicit `Dataset` operands.
+- **Operator calls normalize before execution.** The target flow is
+  `normalize_call -> resolve_transitions -> run -> validate -> update context`.
+  `OperatorCall` carries normalized operator operands, reference contexts, and
+  context effects separately so validation can happen before mutable context
+  adoption.
 - **Plan datasets must remain inspectable, filterable, sampleable, and
   concatenable.** This is the value of plan/apply separation. Lazy
   evaluation must preserve this through the chunk-accessor pattern, not by

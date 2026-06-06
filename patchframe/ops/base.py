@@ -17,8 +17,10 @@ from __future__ import annotations
 
 import warnings
 from abc import ABCMeta, abstractmethod
-from dataclasses import dataclass, replace
-from typing import Any, ClassVar, Self
+from collections.abc import Mapping
+from dataclasses import dataclass, field, replace
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, Self
 
 import pandas as pd
 
@@ -37,17 +39,33 @@ from patchframe.dataset.provenance import DatasetSourceInfo
 from patchframe.dataset.schema import Schema
 from patchframe.dataset.state import DatasetState
 from patchframe.ops.dispatch import compute_output_state
+from patchframe.ops.signature import (
+    DatasetInput,
+    DatasetReturn,
+    FieldInput,
+    FieldOutput,
+    FieldReturn,
+    OperatorSignature,
+    ParamInput,
+    SelectionInput,
+    SelectionReturn,
+)
 from patchframe.ops.transitions import (
     Cardinality,
     CouplingsTransition,
     IndexIdentityTransition,
+    PerRowIndependence,
     SchemaTransition,
     SourcesTransition,
     TableTransition,
     TransitionPlan,
 )
 
+if TYPE_CHECKING:
+    from patchframe.dataset.context import DatasetContext
+
 MISSING = object()
+ContextEffectKind = Literal["advance", "sibling", "none"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,21 +80,97 @@ class Parameter:
     required: bool = False
 
 
-class OperatorMeta(ABCMeta):
-    """Metaclass providing direct class-call execution and parameter collection.
+@dataclass(frozen=True, slots=True)
+class ContextEffect:
+    """A post-validation DatasetContext side effect requested by an operator call."""
 
-    ``MyOperator(...)`` executes a temporary default-configured instance.
-    Configured instances are created through ``MyOperator.instance(...)``.
+    context: DatasetContext
+    anchor: Dataset | None = None
+    effect: ContextEffectKind = "none"
+
+    def __post_init__(self) -> None:
+        if self.effect not in {"advance", "sibling", "none"}:
+            raise ValueError(
+                "ContextEffect.effect must be one of 'advance', 'sibling', or 'none'."
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class OperatorCall:
+    """Normalized semantic operator call.
+
+    ``OperatorCall`` carries operator-facing operands after call normalization.
+    Field-aware operators resolve ``FieldHandle`` values to local field
+    selectors before ``run``. The owning contexts remain recorded in
+    ``reference_contexts`` so authoring provenance is not lost.
+    """
+
+    operator: Operator
+    args: tuple[Any, ...] = ()
+    kwargs: Mapping[str, Any] = field(default_factory=dict)
+    datasets: tuple[Dataset, ...] = ()
+    states: tuple[DatasetState, ...] = ()
+    reference_contexts: tuple[DatasetContext, ...] = ()
+    context_effects: tuple[ContextEffect, ...] = ()
+    variant: str | None = None
+
+    def __post_init__(self) -> None:
+        args = tuple(self.args)
+        kwargs = MappingProxyType(dict(self.kwargs))
+        datasets = tuple(self.datasets)
+        states = tuple(self.states) or tuple(dataset.state for dataset in datasets)
+        reference_contexts = tuple(self.reference_contexts)
+        context_effects = tuple(self.context_effects)
+
+        object.__setattr__(self, "args", args)
+        object.__setattr__(self, "kwargs", kwargs)
+        object.__setattr__(self, "datasets", datasets)
+        object.__setattr__(self, "states", states)
+        object.__setattr__(self, "reference_contexts", reference_contexts)
+        object.__setattr__(self, "context_effects", context_effects)
+
+
+class OperatorMeta(ABCMeta):
+    """Metaclass: direct class-call execution + parameter/operand collection.
+
+    Collects ``Parameter`` attributes into ``__parameters__`` and operand
+    declarations — ``FieldInput`` / ``DatasetInput`` / ``SelectionInput`` plus a
+    ``returns`` kind — into a built ``signature``, the dataclass-style
+    declaration surface (the same collection pattern, in definition order).
+    ``MyOperator(...)`` executes a temporary default-configured instance;
+    configured instances come from ``MyOperator.instance(...)``.
     """
 
     def __new__(mcls, name, bases, namespace):
         params: dict[str, Parameter] = {}
+        inputs: dict[str, Any] = {}
+        outputs: dict[str, Any] = {}
+        returns: Any = None
         for base in bases:
             params.update(getattr(base, "__parameters__", {}))
+            base_signature = getattr(base, "signature", None)
+            if isinstance(base_signature, OperatorSignature):
+                inputs.update(base_signature.inputs)
+                outputs.update(base_signature.outputs)
+                returns = base_signature.returns
         for attr_name, attr_value in namespace.items():
             if isinstance(attr_value, Parameter):
                 params[attr_name] = attr_value
+            elif isinstance(attr_value, (DatasetInput, FieldInput, SelectionInput, ParamInput)):
+                inputs[attr_name] = attr_value
+            elif isinstance(attr_value, FieldOutput):
+                outputs[attr_name] = attr_value
+            elif attr_name == "returns" and isinstance(
+                attr_value, (DatasetReturn, FieldReturn, SelectionReturn)
+            ):
+                returns = attr_value
         namespace["__parameters__"] = params
+        if inputs or outputs:
+            namespace["signature"] = OperatorSignature(
+                inputs=inputs,
+                outputs=outputs,
+                returns=returns if returns is not None else DatasetReturn(),
+            )
         return super().__new__(mcls, name, bases, namespace)
 
     def __call__(cls, *args, **kwargs):
@@ -89,7 +183,10 @@ class Operator(metaclass=OperatorMeta):
 
     transitions: ClassVar[TransitionPlan] = TransitionPlan()
     cardinality: ClassVar[Cardinality] = Cardinality.UNKNOWN
+    per_row_independent: ClassVar[PerRowIndependence] = PerRowIndependence.UNKNOWN
     dataset_context: ClassVar[Parameter] = Parameter(default=None)
+    field_handle_inputs: ClassVar[tuple[str, ...]] = ()
+    signature: ClassVar[OperatorSignature | None] = None
     __parameters__: ClassVar[dict[str, Parameter]]
 
     def __init__(self, **bound_params: Any) -> None:
@@ -114,6 +211,267 @@ class Operator(metaclass=OperatorMeta):
     def name(self) -> str:
         """Human-readable operator name."""
         return type(self).__name__
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        """Execute this operator: the lazy dual arm, or the eager lifecycle.
+
+        Operand-type dispatch (lazy-duality-plan.md Phase 4). When a *dual*
+        operator — one whose signature declares a ``FieldReturn``/
+        ``SelectionReturn`` — is handed a ``FieldHandle`` operand, route to the
+        lazy arm: a same-level coupling if the operator is ``coupling_able``,
+        otherwise a ``BundleField`` carrier. A plain ``Dataset``/name call (no
+        handles), an op with no signature, and ``custom`` ops all take the eager
+        lifecycle unchanged.
+        """
+
+        if self._is_dual_lazy_call(args, kwargs):
+            return self._dispatch_lazy(args, kwargs)
+        return self._run_eager(*args, **kwargs)
+
+    def _run_eager(self, *args: Any, **kwargs: Any) -> Any:
+        """Execute the eager normalized-call lifecycle."""
+
+        call = self.normalize_call(*args, **kwargs)
+        transitions = self.resolve_call_transitions(call)
+        result = self.run(call, transitions)
+        self.validate_result(call, result)
+        self.apply_context_effects(call, result)
+        return result
+
+    # -- Lazy dual arm (operand-type dispatch) ------------------------------
+
+    def coupling_able(self) -> bool:
+        """Whether this operator's lazy form can be a same-level coupling.
+
+        The routing gate (lazy-duality-plan.md): a same-level lazy op records a
+        *coupling*, and couplings are the add/fill subset — schema preserve or
+        extend, one output row per input row, per-row-independent. Everything
+        else needs a ``BundleField`` carrier. Derived from existing
+        declarations; not a separate capability.
+        """
+
+        return (
+            self.transitions.schema.mode in {"preserve", "extend"}
+            and self.cardinality is Cardinality.PRESERVE
+            and self.per_row_independent is PerRowIndependence.INDEPENDENT
+        )
+
+    def _is_dual_lazy_call(self, args: tuple[Any, ...], kwargs: Mapping[str, Any]) -> bool:
+        """Whether this call routes to the lazy arm (a dual op handed handles)."""
+
+        sig = self.signature
+        if sig is None or sig.custom:
+            return False
+        if not isinstance(sig.returns, (FieldReturn, SelectionReturn)):
+            return False
+        contexts = self._field_handle_contexts(args, kwargs)
+        if not contexts:
+            return False
+        if len(contexts) != 1:
+            raise ValueError(f"{self.name}: FieldHandles must share one DatasetContext.")
+        return True
+
+    def _dispatch_lazy(self, args: tuple[Any, ...], kwargs: Mapping[str, Any]) -> Any:
+        sig = self.signature
+        assert sig is not None  # guarded by _is_dual_lazy_call
+        context = self._field_handle_contexts(args, kwargs)[0]
+        if self.coupling_able():
+            return self._same_level_lazy(sig, context, args, kwargs)
+        return self._bundle_lazy(sig, context, args, kwargs)
+
+    def _same_level_lazy(
+        self,
+        sig: OperatorSignature,
+        context: DatasetContext,
+        args: tuple[Any, ...],
+        kwargs: Mapping[str, Any],
+    ) -> Any:
+        """Coupling-able lazy arm: record the coupling, return a chaining handle.
+
+        Run the eager lifecycle (it resolves the ambient dataset from the
+        handle's context, records the coupling, and advances the cursor), then
+        return a handle to the coupling output — the unifying same-level rule
+        (output = ``coupling.output_field``), read from the declaration.
+        """
+
+        self._run_eager(*args, **dict(kwargs))
+        output_names = self._lazy_output_names(sig, args, kwargs)
+        if isinstance(sig.returns, SelectionReturn):
+            from patchframe.dataset.context import FieldSelection
+
+            return FieldSelection(tuple(context.field(name) for name in output_names))
+        return context.field(output_names[0])
+
+    def _bundle_lazy(
+        self,
+        sig: OperatorSignature,
+        context: DatasetContext,
+        args: tuple[Any, ...],
+        kwargs: Mapping[str, Any],
+    ) -> Any:
+        """Needs-bundle lazy arm: defer the operator as an ``ApplyOperator``."""
+
+        from patchframe.ops.bundle import defer_in_level
+
+        handles, out, params = self._bind_bundle(sig, args, kwargs)
+        return defer_in_level(type(self), *handles, out=out, params=params)
+
+    def _bind_slots(
+        self,
+        sig: OperatorSignature,
+        args: tuple[Any, ...],
+        kwargs: Mapping[str, Any],
+    ) -> tuple[dict[str, Any], Any, dict[str, Any]]:
+        """Bind raw call args to the ordered signature slots.
+
+        Returns ``(bound, out, leftover)``: positional args fill declared slots
+        in order (a ``variadic`` slot consumes the rest), keyword args bind by
+        slot name, ``out`` is the produced-field slot's value, and ``leftover``
+        is the undeclared keyword args (forwarded as params).
+        """
+
+        bound: dict[str, Any] = {}
+        leftover = dict(kwargs)
+        positional = list(args)
+        index = 0
+        for name, spec in sig.inputs.items():
+            if getattr(spec, "variadic", False):
+                bound[name] = tuple(positional[index:])
+                index = len(positional)
+            elif index < len(positional):
+                bound[name] = positional[index]
+                index += 1
+            elif name in leftover:
+                bound[name] = leftover.pop(name)
+            elif isinstance(spec, ParamInput) and spec.has_default:
+                bound[name] = spec.default
+        if index < len(positional):
+            raise TypeError(
+                f"{self.name}: too many positional arguments for the declared operands."
+            )
+        out: Any = None
+        out_slot = sig.output_slot_name()
+        if out_slot is not None:
+            out = leftover.pop(out_slot, None)
+        return bound, out, leftover
+
+    def _bind_bundle(
+        self,
+        sig: OperatorSignature,
+        args: tuple[Any, ...],
+        kwargs: Mapping[str, Any],
+    ) -> tuple[list[Any], Any, dict[str, Any]]:
+        """Split a bundle-arm call into ``(handles, out, params)``.
+
+        Operand slots become the deferred ``*handles`` (in declaration order);
+        ``ParamInput`` slots and undeclared keyword args become ``params`` (by
+        name, so ``ApplyOperator`` can replay them as keywords).
+        """
+
+        bound, out, leftover = self._bind_slots(sig, args, kwargs)
+        handles: list[Any] = []
+        params: dict[str, Any] = dict(leftover)
+        for name, spec in sig.inputs.items():
+            if name not in bound:
+                continue
+            value = bound[name]
+            if isinstance(spec, (DatasetInput, FieldInput, SelectionInput)):
+                if getattr(spec, "variadic", False):
+                    handles.extend(value)
+                else:
+                    handles.append(value)
+            elif isinstance(spec, ParamInput):
+                params[name] = value
+        return handles, out, params
+
+    def _lazy_output_names(
+        self,
+        sig: OperatorSignature,
+        args: tuple[Any, ...],
+        kwargs: Mapping[str, Any],
+    ) -> list[str]:
+        """Resolve the same-level lazy output field name(s) from the declaration.
+
+        Fresh outputs are the caller-supplied ``FieldOutput`` value(s); an
+        in-place output is the ``FieldInput`` marked ``output=True``, else the
+        sole ``FieldInput``. Equivalent to the coupling's ``output_field`` by
+        construction.
+        """
+
+        if sig.outputs:
+            return [_selector_name(kwargs.get(out_name)) for out_name in sig.outputs]
+        field_inputs = [
+            (name, spec)
+            for name, spec in sig.inputs.items()
+            if isinstance(spec, FieldInput)
+        ]
+        marked = [(name, spec) for name, spec in field_inputs if spec.output]
+        chosen = marked or field_inputs
+        if len(chosen) != 1:
+            raise ValueError(
+                f"{self.name}: cannot determine the lazy output field; declare a "
+                "FieldOutput or mark one FieldInput output=True."
+            )
+        bound, _, _ = self._bind_slots(sig, args, kwargs)
+        return [_selector_name(bound.get(chosen[0][0]))]
+
+    def normalize_call(self, *args: Any, **kwargs: Any) -> OperatorCall:
+        """Return the normalized semantic call for this operator invocation."""
+
+        if self._field_handle_contexts(args, kwargs):
+            raise TypeError(
+                f"{self.name}: override normalize_call to accept FieldHandle inputs."
+            )
+        return OperatorCall(
+            operator=self,
+            args=args,
+            kwargs=kwargs,
+        )
+
+    def resolve_call_transitions(self, call: OperatorCall) -> TransitionPlan:
+        """Resolve the transition plan for a normalized call."""
+
+        return self.resolve_transitions(
+            *call.states,
+            *call.args,
+            **dict(call.kwargs),
+        )
+
+    def run(self, call: OperatorCall, transitions: TransitionPlan) -> Any:
+        """Execute a normalized call. Override in direct ``Operator`` subclasses."""
+
+        raise NotImplementedError(
+            f"{self.name}: override run(call, transitions) or __call__."
+        )
+
+    def validate_result(self, call: OperatorCall, result: Any) -> None:
+        """Validate the operator result before context side effects run."""
+
+    def apply_context_effects(self, call: OperatorCall, result: Any) -> None:
+        """Apply post-validation DatasetContext effects requested by ``call``."""
+
+        for context_effect in call.context_effects:
+            if context_effect.effect in {"none", "sibling"}:
+                continue
+            if context_effect.effect != "advance":
+                raise ValueError(
+                    f"{self.name}: unknown context effect "
+                    f"{context_effect.effect!r}."
+                )
+            if not isinstance(result, Dataset):
+                raise TypeError(
+                    f"{self.name}: cannot advance DatasetContext from "
+                    f"{type(result).__name__} result."
+                )
+            if (
+                context_effect.anchor is not None
+                and context_effect.context.dataset is not context_effect.anchor
+            ):
+                raise ValueError(
+                    f"{self.name}: DatasetContext no longer points at the "
+                    "snapshot selected during call normalization."
+                )
+            context_effect.context.adopt(result)
 
     def resolve_param(self, name: str, value: Any = MISSING) -> Any:
         """Resolve one parameter from call-time value or bound config."""
@@ -155,6 +513,73 @@ class Operator(metaclass=OperatorMeta):
         """
         return self.transitions
 
+    def _field_handle_contexts(self, *values: Any):
+        from patchframe.dataset.context import field_handle_contexts
+
+        return field_handle_contexts(*values)
+
+    def _field_input_slots(self) -> tuple[str, ...]:
+        """Ordered field-operand slot names.
+
+        Sourced from the declared ``signature`` when present, else the legacy
+        ``field_handle_inputs`` tuple. This is the single seam the signature
+        feeds: the rest of the normalize-call machinery is unchanged.
+        """
+
+        if self.signature is not None:
+            return self.signature.field_slots()
+        return self.field_handle_inputs
+
+    def _assert_field_handles_allowed(self, *values: Any):
+        contexts = self._field_handle_contexts(*values)
+        if contexts and not self._field_input_slots():
+            raise TypeError(
+                f"{self.name}: FieldHandle inputs are not accepted by this "
+                "operator. FieldHandle inputs are reserved for field-scoped "
+                "parameters declared by field-aware operators."
+            )
+        return contexts
+
+    def _reject_unresolved_field_handles(self, *values: Any) -> None:
+        if self._field_handle_contexts(*values):
+            allowed = ", ".join(self._field_input_slots()) or "<none>"
+            raise TypeError(
+                f"{self.name}: FieldHandle inputs are only accepted for "
+                f"declared field-scoped parameters: {allowed}."
+            )
+
+    def _resolve_field_handle_inputs(
+        self,
+        schema: Schema,
+        args: tuple[Any, ...],
+        kwargs: Mapping[str, Any],
+    ) -> tuple[tuple[Any, ...], dict[str, Any]]:
+        """Resolve declared field-scoped handle inputs into local selectors."""
+
+        slots = self._field_input_slots()
+        if not slots:
+            return args, dict(kwargs)
+
+        from patchframe.dataset.context import resolve_field_selectors
+
+        resolved_args = list(args)
+        resolved_kwargs = dict(kwargs)
+        for index, name in enumerate(slots):
+            if index < len(resolved_args):
+                resolved_args[index] = resolve_field_selectors(
+                    resolved_args[index],
+                    schema,
+                    op_name=self.name,
+                )
+            if name in resolved_kwargs:
+                resolved_kwargs[name] = resolve_field_selectors(
+                    resolved_kwargs[name],
+                    schema,
+                    op_name=self.name,
+                )
+        self._reject_unresolved_field_handles(resolved_args, resolved_kwargs)
+        return tuple(resolved_args), resolved_kwargs
+
     def _normalize_bound_params(self, params: dict[str, Any]) -> dict[str, Any]:
         unknown = set(params) - set(self.__parameters__)
         if unknown:
@@ -183,8 +608,9 @@ class DatasetOperator(Operator):
     only the corresponding ``apply_*`` hooks. Aspects declared ``"preserve"``
     (the default) or ``"inherit"`` are passed through automatically.
 
-    Override ``__call__`` directly for a full escape hatch that bypasses aspect
-    dispatch entirely.
+    Subclasses normally override the aspect hooks. Override ``normalize_call``,
+    ``run``, or ``validate_result`` for lifecycle customization; override
+    ``__call__`` directly only as a full escape hatch.
     """
 
     def __call__(
@@ -193,7 +619,7 @@ class DatasetOperator(Operator):
         *args: Any,
         **kwargs: Any,
     ) -> Dataset:
-        return self._dispatch(dataset, *args, **kwargs)
+        return Operator.__call__(self, dataset, *args, **kwargs)
 
     def _dispatch(
         self,
@@ -201,28 +627,51 @@ class DatasetOperator(Operator):
         *args: Any,
         **kwargs: Any,
     ) -> Dataset:
-        dataset, args, kwargs, dataset_context = self._normalize_dataset_call(
+        """Compatibility entrypoint for unary subclasses with custom signatures."""
+
+        return Operator.__call__(self, dataset, *args, **kwargs)
+
+    def normalize_call(
+        self,
+        dataset: Dataset | Any = MISSING,
+        *args: Any,
+        **kwargs: Any,
+    ) -> OperatorCall:
+        dataset, args, kwargs, dataset_context, handle_contexts = self._normalize_dataset_call(
             dataset,
             args,
             kwargs,
         )
-        result = self._apply(dataset, *args, **kwargs)
+        args, kwargs = self._resolve_field_handle_inputs(dataset.schema, args, kwargs)
+        context_effects: tuple[ContextEffect, ...] = ()
         if dataset_context is not None and dataset is dataset_context.dataset:
-            dataset_context.adopt(result)
-        return result
+            context_effects = (
+                ContextEffect(
+                    context=dataset_context,
+                    anchor=dataset,
+                    effect="advance",
+                ),
+            )
+        return OperatorCall(
+            operator=self,
+            datasets=(dataset,),
+            states=(dataset.state,),
+            args=args,
+            kwargs=kwargs,
+            reference_contexts=handle_contexts,
+            context_effects=context_effects,
+        )
 
     def _normalize_dataset_call(
         self,
         dataset: Dataset | Any,
         args: tuple[Any, ...],
         kwargs: dict[str, Any],
-    ) -> tuple[Dataset, tuple[Any, ...], dict[str, Any], Any]:
+    ) -> tuple[Dataset, tuple[Any, ...], dict[str, Any], Any, tuple[Any, ...]]:
         """Resolve one unary call's dataset without rewriting operator arguments."""
 
-        from patchframe.dataset.context import field_handle_contexts
-
         dataset_context = self.resolve_dataset_context()
-        handle_contexts = field_handle_contexts(dataset, args, kwargs)
+        handle_contexts = self._assert_field_handles_allowed(dataset, args, kwargs)
         if len(handle_contexts) > 1:
             raise ValueError(f"{self.name}: FieldHandles must share one DatasetContext.")
         if handle_contexts:
@@ -243,7 +692,7 @@ class DatasetOperator(Operator):
                     f"{self.name}: FieldHandles resolve against their "
                     "DatasetContext's current dataset snapshot."
                 )
-            return dataset, args, kwargs, dataset_context
+            return dataset, args, kwargs, dataset_context, handle_contexts
         if dataset_context is None:
             raise TypeError(
                 f"{self.name}: expected a Dataset as the first argument or an "
@@ -251,17 +700,45 @@ class DatasetOperator(Operator):
             )
         if dataset is not MISSING:
             args = (dataset, *args)
-        return dataset_context.dataset, args, kwargs, dataset_context
+        return dataset_context.dataset, args, kwargs, dataset_context, handle_contexts
 
-    def _apply(self, dataset: Dataset, *args: Any, **kwargs: Any) -> Dataset:
-        new_state = compute_output_state(self, (dataset.state,), args, kwargs)
+    def run(self, call: OperatorCall, transitions: TransitionPlan) -> Dataset:
+        dataset = call.datasets[0]
+        args = call.args
+        kwargs = dict(call.kwargs)
+        new_state = compute_output_state(
+            self,
+            (dataset.state,),
+            args,
+            kwargs,
+            declared_transitions=transitions,
+        )
         result = dataset.replace_state(
             schema=new_state.schema,
             table=new_state.table,
             couplings=new_state.couplings,
             sources=new_state.sources,
         )
+        return result
+
+    def validate_result(self, call: OperatorCall, result: Any) -> None:
+        if not isinstance(result, Dataset):
+            raise TypeError(
+                f"{self.name}: expected run() to return a Dataset, got "
+                f"{type(result).__name__}."
+            )
         self._validate_output(result)
+
+    def _apply(self, dataset: Dataset, *args: Any, **kwargs: Any) -> Dataset:
+        """Apply this unary operator without DatasetContext side effects."""
+
+        call = replace(
+            self.normalize_call(dataset, *args, **kwargs),
+            context_effects=(),
+        )
+        transitions = self.resolve_call_transitions(call)
+        result = self.run(call, transitions)
+        self.validate_result(call, result)
         return result
 
     def apply_index_identity(
@@ -403,7 +880,10 @@ class CreationOperator(Operator):
     ``source_manager`` is a Parameter so it can be bound at instance level for
     isolation (e.g. in tests): ``MyOp.instance(source_manager=isolated_mgr)``.
 
-    Override ``__call__`` directly for a full escape hatch.
+    Subclasses normally override ``make_source``, ``generate_source_info``, and
+    ``build``. Override ``normalize_call``, ``run``, or ``validate_result`` for
+    lifecycle customization; override ``__call__`` directly only as a full
+    escape hatch.
     """
 
     transitions: ClassVar[TransitionPlan] = TransitionPlan(
@@ -416,9 +896,24 @@ class CreationOperator(Operator):
     source_manager: ClassVar[Parameter] = Parameter(default=None)
 
     def __call__(self, *args: Any, **kwargs: Any) -> Dataset:
-        return self._create(*args, **kwargs)
+        return Operator.__call__(self, *args, **kwargs)
 
     def _create(self, *args: Any, **kwargs: Any) -> Dataset:
+        """Compatibility entrypoint for creation subclasses."""
+
+        return Operator.__call__(self, *args, **kwargs)
+
+    def normalize_call(self, *args: Any, **kwargs: Any) -> OperatorCall:
+        return OperatorCall(
+            operator=self,
+            args=args,
+            kwargs=kwargs,
+            reference_contexts=self._assert_field_handles_allowed(args, kwargs),
+        )
+
+    def run(self, call: OperatorCall, transitions: TransitionPlan) -> Dataset:
+        args = call.args
+        kwargs = dict(call.kwargs)
         mgr: SourceManager = self.resolve_param("source_manager") or get_default_manager()
 
         source = self.make_source(*args, **kwargs)
@@ -435,6 +930,14 @@ class CreationOperator(Operator):
         )
         state = replace(state, sources=(source_info,))
         return Dataset(state=state, source_manager=mgr)
+
+    def validate_result(self, call: OperatorCall, result: Any) -> None:
+        if not isinstance(result, Dataset):
+            raise TypeError(
+                f"{self.name}: expected run() to return a Dataset, got "
+                f"{type(result).__name__}."
+            )
+        result.schema.validate_table(result.table)
 
     def make_source(self, *args: Any, **kwargs: Any) -> DataSource | None:
         """Return a live, opened DataSource for this dataset.
@@ -457,8 +960,10 @@ class PlanOperator(Operator):
     """Creates an explicit plan dataset.
 
     A plan dataset is a normal Dataset whose rows describe a later operation.
-    Subclasses own their call signature and use ``build_plan_dataset`` to
-    assemble and validate the concrete plan state.
+    Subclasses normalize their call signature into ``OperatorCall`` and return
+    a concrete plan from ``run``. Plan outputs are sibling artifacts by default:
+    no DatasetContext is advanced unless a subclass explicitly adds a context
+    effect.
     """
 
     transitions: ClassVar[TransitionPlan] = TransitionPlan(
@@ -469,6 +974,34 @@ class PlanOperator(Operator):
     )
     plan_index_name: ClassVar[str] = "plan_id"
     required_plan_fields: ClassVar[tuple[str, ...]] = ()
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Dataset:
+        return Operator.__call__(self, *args, **kwargs)
+
+    def normalize_call(self, *args: Any, **kwargs: Any) -> OperatorCall:
+        return OperatorCall(
+            operator=self,
+            args=args,
+            kwargs=kwargs,
+            reference_contexts=self._assert_field_handles_allowed(args, kwargs),
+        )
+
+    def validate_result(self, call: OperatorCall, result: Any) -> None:
+        if not isinstance(result, Dataset):
+            raise TypeError(
+                f"{self.name}: expected run() to return a Dataset, got "
+                f"{type(result).__name__}."
+            )
+        options = self.plan_validation_options(call)
+        self.validate_plan_schema(result.schema, result.table, **options)
+
+    def plan_validation_options(self, call: OperatorCall) -> dict[str, Any]:
+        """Return validation options for this normalized plan call."""
+
+        return {
+            "plan_index_name": self.plan_index_name,
+            "required_plan_fields": self.required_plan_fields,
+        }
 
     def build_plan_dataset(
         self,
@@ -608,7 +1141,9 @@ class CompositionOperator(Operator):
     Sources are unioned by default (deduplicated by ``source_id`` or
     ``source_uri``). Override ``combine_sources`` to change this.
 
-    Override ``__call__`` directly for a full escape hatch.
+    Subclasses normally override the composition hooks. Override
+    ``normalize_call``, ``run``, or ``validate_result`` for lifecycle
+    customization; override ``__call__`` directly only as a full escape hatch.
     """
 
     transitions: ClassVar[TransitionPlan] = TransitionPlan(
@@ -621,26 +1156,68 @@ class CompositionOperator(Operator):
     advances_dataset_context: ClassVar[bool] = True
 
     def __call__(self, *datasets: Dataset, **kwargs: Any) -> Dataset:
-        return self._compose(*datasets, **kwargs)
+        return Operator.__call__(self, *datasets, **kwargs)
 
     def _compose(self, *datasets: Dataset, **kwargs: Any) -> Dataset:
+        """Compatibility entrypoint for composition subclasses."""
+
+        return Operator.__call__(self, *datasets, **kwargs)
+
+    def normalize_call(self, *datasets: Dataset, **kwargs: Any) -> OperatorCall:
+        handle_contexts = self._assert_field_handles_allowed(datasets, kwargs)
+        for dataset in datasets:
+            if not isinstance(dataset, Dataset):
+                raise TypeError(f"{self.name}: expected Dataset inputs.")
+
         dataset_context = self.resolve_dataset_context()
-        states = tuple(d.state for d in datasets)
-        new_state = compute_output_state(self, states, (), kwargs)
-        source_manager = self.combine_source_managers(
-            *datasets, composed_schema=new_state.schema
-        )
-        result = Dataset(
-            state=new_state,
-            source_manager=source_manager,
-        )
+        context_effects: tuple[ContextEffect, ...] = ()
         if (
             self.advances_dataset_context
             and dataset_context is not None
             and any(dataset is dataset_context.dataset for dataset in datasets)
         ):
-            dataset_context.adopt(result)
-        return result
+            context_effects = (
+                ContextEffect(
+                    context=dataset_context,
+                    anchor=dataset_context.dataset,
+                    effect="advance",
+                ),
+            )
+
+        return OperatorCall(
+            operator=self,
+            datasets=tuple(datasets),
+            states=tuple(dataset.state for dataset in datasets),
+            kwargs=kwargs,
+            reference_contexts=handle_contexts,
+            context_effects=context_effects,
+        )
+
+    def run(self, call: OperatorCall, transitions: TransitionPlan) -> Dataset:
+        datasets = call.datasets
+        kwargs = dict(call.kwargs)
+        new_state = compute_output_state(
+            self,
+            call.states,
+            call.args,
+            kwargs,
+            declared_transitions=transitions,
+        )
+        source_manager = self.combine_source_managers(
+            *datasets, composed_schema=new_state.schema
+        )
+        return Dataset(
+            state=new_state,
+            source_manager=source_manager,
+        )
+
+    def validate_result(self, call: OperatorCall, result: Any) -> None:
+        if not isinstance(result, Dataset):
+            raise TypeError(
+                f"{self.name}: expected run() to return a Dataset, got "
+                f"{type(result).__name__}."
+            )
+        result.schema.validate_table(result.table)
 
     def combine_sources(
         self,
@@ -669,6 +1246,23 @@ class CompositionOperator(Operator):
 
     @abstractmethod
     def apply_couplings(self, *states: DatasetState, **kwargs: Any) -> CouplingSet: ...
+
+
+def _selector_name(value: Any) -> str:
+    """Resolve a local field name from a string selector or a ``FieldHandle``.
+
+    A ``FieldHandle``'s ``.name`` resolves against its context's current
+    snapshot, so callers must resolve output names *after* any context advance.
+    """
+
+    if isinstance(value, str):
+        return value
+    name = getattr(value, "name", None)
+    if isinstance(name, str):
+        return name
+    raise TypeError(
+        f"expected a field name or FieldHandle, got {type(value).__name__}."
+    )
 
 
 def _is_null_label(value: Any) -> bool:
