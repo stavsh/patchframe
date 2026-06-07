@@ -9,6 +9,7 @@ import pandas as pd
 from patchframe.dataset.schema import Schema
 from patchframe.dataset.state import DatasetState
 from patchframe.ops.base import DatasetOperator
+from patchframe.ops.signature import DatasetInput, FieldOutput, FieldReturn, ParamInput
 from patchframe.ops.transitions import (
     Cardinality,
     PerRowIndependence,
@@ -23,15 +24,22 @@ class keep(DatasetOperator):
     Complement of ``drop``. Schema and table are narrowed to the listed fields.
     Couplings that reference any removed field (as input or output) are pruned.
 
+    Narrows the schema, so it is not coupling-able: its lazy arm lifts onto a
+    ``BundleField`` carrier.
+
     Usage
     -----
-    keep(ds, ["item_id", "data", "clip"])
-    keep.instance()(ds, ["item_id", "data"])
+    keep(ds, ["item_id", "data", "clip"])             # eager -> Dataset
+    keep(b.field("cell"), ["item_id"], out="kept")     # lazy  -> FieldHandle
     """
 
     transitions = TransitionPlan(schema=SchemaTransition.narrow())
     cardinality = Cardinality.PRESERVE
     per_row_independent = PerRowIndependence.INDEPENDENT
+    dataset = DatasetInput()
+    fields = ParamInput()
+    out = FieldOutput()
+    returns = FieldReturn()
 
     def apply_schema(self, state: DatasetState, fields: list[str], **_: Any) -> Schema:
         unknown = [f for f in fields if not state.schema.has(f)]

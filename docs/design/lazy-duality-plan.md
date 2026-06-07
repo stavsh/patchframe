@@ -221,6 +221,51 @@ in-level graph execution (multiple `ApplyOperator`s on one carrier). Audit
 bundle validity / identity (shape-generic, §1); enforce the one-level nesting
 cap.
 
+**Rollout — LANDED 2026-06-07 (via the interpreter, no manual branches).** All
+needs-bundle transforms wired by declaring a signature only: `rename`, `drop`,
+`keep`, `set_index` (single `DatasetInput` + `ParamInput` + `FieldOutput`),
+`concat`/`concat_rows`/`concat_columns` (variadic `DatasetInput`), `join` and
+`explode` (fixed `DatasetInput`s; their custom `__call__`/`normalize_call` now
+forward `out`). `concat` stays a dispatcher — the bundle arm captures it
+as-called and re-dispatches the row/column variant at `collect`.
+
+**Taxonomy correction (2026-06-07).** `add_column`/`assign` are *named-output*
+ops (the output names are `field_def.name` / the column keys), so their deferred
+form is a handle/`Selection` to those columns with **no `out`** — they belong with
+the `bind_*` same-level family, not the bundle-lifters. Their blocker was the
+*trigger*: they build columns from values, not from a field-reference handle.
+**Resolved 2026-06-07 via `new_field`** (not a dataset-scoped `FieldArrayHandle`,
+which was considered and dropped as the wrong abstraction): `Dataset.new_field(
+field_def)` / `DatasetContext.new_field(...)` adds a null-filled field and returns
+a `FieldHandle`. It must be a *cursor* operation (advances the shared context),
+**not** a pure `Dataset` function — otherwise `[ds.new_field(a), ds.new_field(b)]`
+forks two snapshots and the handles don't co-resolve. With the targets in hand,
+`SelectionInput`/`SelectionReturn` fit: `assign([h_a, h_b], values)` (handle form,
+values keyed by name) fills them and returns a `FieldSelection`. `assign` keeps a
+small `@overload`-style `__call__` split (`Dataset + **cols` vs `selection +
+values`; `target`/`values` positional-only). `add_column` will follow.
+`window_expansion_plan` is **not** a creation op — it is a
+transform (source → plan), a bundle-lifter like `explode`. Its lazy arm needs a
+slot-type-aware gate (only `DatasetInput`-slot handles trigger deferral) so its
+eager `field`/`bindings` references don't misfire. Its old `normalize_call` was
+pre-interpreter boilerplate; **modernized 2026-06-07** — `window_expansion_plan`
+is now fully declarative (`dataset=DatasetInput`, `field=FieldInput`,
+`bindings=SelectionInput`, `returns=DatasetReturn`; no `field_handle_inputs`, no
+`normalize_call`). The source-dataset normalization moved to
+`PlanOperator._normalize_source_plan_call` (signature-driven, activates on a
+`DatasetInput` slot; resolves source + field-handles via the shared
+`Operator._resolve_field_handles_for_dataset`), inherited by any source-dataset
+plan op. `make_plan` keeps its own `normalize_call` (its `target` is a
+dataset-*level* handle, `_resolve_target`/IndexField — a different pattern). Only
+`make_from_dataframe`/`make_plan` are true eager creation entry points.
+
+**Chained in-level graph execution verified**: `bundle` → deferred
+`merge` → `where` → `drop`, three `ApplyOperator`s on one carrier, topo-sorted
+and materialized in one `collect()`, equals the eager pipeline
+(`examples/lazy_eager_duality_usage.py` + `tests/test_lazy_arm.py` +
+`tests/test_lazy_duality_example.py`). 404 passed. The lift case (mixed
+`Dataset`/handle operands) and the one-level nesting cap remain deferred.
+
 *Landed (both arms proven against real ops):*
 
 - **Bundle arm** — `defer_in_level(operator, *handles, out, params)`: record an

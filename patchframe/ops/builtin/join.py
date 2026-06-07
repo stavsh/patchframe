@@ -16,6 +16,7 @@ from patchframe.dataset.identity import primary_index_field
 from patchframe.dataset.schema import Schema
 from patchframe.dataset.state import DatasetState
 from patchframe.ops.base import CompositionOperator, OperatorCall
+from patchframe.ops.signature import DatasetInput, FieldOutput, FieldReturn
 from patchframe.ops.builtin._composition import normalize_field_names
 from patchframe.ops.transitions import (
     CouplingsTransition,
@@ -81,7 +82,12 @@ class DimensionJoin(JoinStrategy):
 
 
 class join(CompositionOperator):
-    """Build a join-plan dataset mapping rows from two input datasets."""
+    """Build a join-plan dataset mapping rows from two input datasets.
+
+    Constructs a new plan schema, so it is not coupling-able: its lazy arm (two
+    bundle handle operands) lifts onto a ``BundleField`` carrier and defers the
+    join planning to ``collect`` time.
+    """
 
     advances_dataset_context = False
     per_row_independent = PerRowIndependence.DEPENDENT
@@ -92,6 +98,9 @@ class join(CompositionOperator):
         sources=SourcesTransition.compose(),
         index_identity=IndexIdentityTransition.mint(),
     )
+    operands = DatasetInput(variadic=True)
+    out = FieldOutput()
+    returns = FieldReturn()
 
     def __call__(
         self,
@@ -99,8 +108,12 @@ class join(CompositionOperator):
         strategy: JoinStrategy | None = None,
         on: str | Iterable[str] | None = None,
         how: JoinHow | None = None,
+        out: str | None = None,
     ):
-        return super().__call__(*datasets, strategy=strategy, on=on, how=how)
+        # ``out`` flows through to the interpreter (Operator.__call__): with
+        # bundle handle operands it names the deferred result cell; the eager
+        # path ignores it.
+        return super().__call__(*datasets, strategy=strategy, on=on, how=how, out=out)
 
     def normalize_call(
         self,
@@ -108,6 +121,7 @@ class join(CompositionOperator):
         strategy: JoinStrategy | None = None,
         on: str | Iterable[str] | None = None,
         how: JoinHow | None = None,
+        out: str | None = None,
     ) -> OperatorCall:
         resolved = _resolve_strategy(strategy=strategy, on=on, how=how)
         return super().normalize_call(*datasets, strategy=resolved)

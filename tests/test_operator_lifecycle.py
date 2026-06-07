@@ -157,12 +157,19 @@ def test_context_effect_rejects_unknown_effect():
         pf.ContextEffect(context=ctx, effect="replace")
 
 
-def test_dataset_level_concat_rejects_field_handles():
+def test_concat_field_handles_route_to_the_lazy_arm_and_require_bundle_cells():
+    # concat routes field-handle operands to its lazy bundle arm (the duality).
+    # Same-context non-bundle handles are rejected there (bundle first); handles
+    # from different contexts are rejected earlier, since the lazy arm threads a
+    # single DatasetContext forward.
+    ds = _dataset([1]).context()
+    with pytest.raises(TypeError, match="not a BundleField"):
+        pf.concat(ds.field("value"), ds.field("value"), out="combined")
+
     left = _dataset([1]).context()
     right = _dataset([2]).context()
-
-    with pytest.raises(TypeError, match="concat: FieldHandle inputs"):
-        pf.concat(left.field("value"), right.field("value"))
+    with pytest.raises(ValueError, match="must share one DatasetContext"):
+        pf.concat(left.field("value"), right.field("value"), out="combined")
 
 
 def test_merge_field_handles_route_to_the_lazy_arm_and_require_bundle_cells():
@@ -522,7 +529,16 @@ def test_field_handle_inputs_are_explicit_operator_convention():
     assert pf.bind_dimensions.signature.field_slots() == ("bindings",)
     assert pf.bind_dimensions.signature.output_slots() == ("slice_field",)
     assert pf.bind_dimensions.field_handle_inputs == ()
-    assert pf.consume.field_handle_inputs == ("target",)
+    assert pf.consume.signature.field_slots() == ("target",)
+    assert pf.consume.field_handle_inputs == ()
+    # make_plan's `target` is a dataset-level handle (resolved via _resolve_target,
+    # must be an IndexField) rather than a field reference, so it keeps the legacy
+    # field_handle_inputs permission seam.
     assert pf.make_plan.field_handle_inputs == ("target",)
-    assert pf.window_expansion_plan.field_handle_inputs == ("field", "bindings")
+    # window_expansion_plan is a source-dataset plan op: its source is a
+    # DatasetInput and field/bindings are field-input slots, all from the
+    # signature (the legacy tuple is superseded).
+    assert pf.window_expansion_plan.signature.field_slots() == ("field", "bindings")
+    assert pf.window_expansion_plan.signature.dataset_slots() == ("dataset",)
+    assert pf.window_expansion_plan.field_handle_inputs == ()
     assert pf.concat.field_handle_inputs == ()

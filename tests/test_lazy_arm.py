@@ -215,3 +215,81 @@ def test_bind_dimensions_same_level_lazy_arm_with_nested_handles():
     assert ctx.dataset.schema.has("clip")
     assert any(isinstance(c, BindDimensions) for c in ctx.dataset.couplings.couplings)
     assert all(not isinstance(field, pf.BundleField) for field in ctx.dataset.schema)
+
+
+# ---------------------------------------------------------------------------
+# The needs-bundle transform set, wired purely from signatures (no manual
+# __call__): collect() of the deferred form equals the eager call.
+# ---------------------------------------------------------------------------
+
+
+def _rows(values: list[int], index: list[str]) -> pf.Dataset:
+    return pf.make_from_dataframe(
+        pd.DataFrame({"v": values}, index=index),
+        pf.Schema(fields=(pf.IndexField(name="item_id"), pf.ValueField(name="v", dtype=int))),
+    )
+
+
+def test_rename_lazy_arm_collect_equals_eager():
+    ds = _rows([1, 2, 3], ["a", "b", "c"])
+    handle = pf.rename(pf.bundle(ds).field("cell_0"), {"v": "value"}, out="renamed")
+
+    assert isinstance(handle, pf.FieldHandle)
+    result = handle.collect()
+    eager = pf.rename(ds, {"v": "value"})
+    assert result.schema.names() == eager.schema.names()
+    pd.testing.assert_frame_equal(result.table, eager.table)
+
+
+def test_drop_lazy_arm_collect_equals_eager():
+    ds = _rows([1, 2, 3], ["a", "b", "c"])
+    handle = pf.drop(pf.bundle(ds).field("cell_0"), ["v"], out="dropped")
+
+    result = handle.collect()
+    eager = pf.drop(ds, ["v"])
+    assert result.schema.names() == eager.schema.names()
+
+
+def test_set_index_lazy_arm_collect_equals_eager():
+    ds = pf.make_from_dataframe(
+        pd.DataFrame({"key": ["x", "y"], "v": [1, 2]}, index=["a", "b"]),
+        pf.Schema(
+            fields=(
+                pf.IndexField(name="item_id"),
+                pf.ValueField(name="key", dtype=str),
+                pf.ValueField(name="v", dtype=int),
+            )
+        ),
+    )
+    handle = pf.set_index(pf.bundle(ds).field("cell_0"), "key", out="reindexed")
+
+    result = handle.collect()
+    eager = pf.set_index(ds, "key")
+    pd.testing.assert_frame_equal(result.table, eager.table)
+
+
+def test_concat_lazy_arm_collect_equals_eager():
+    # The variadic dispatcher: the bundle arm captures concat as-called and
+    # re-dispatches the row/column variant at collect time.
+    a = _rows([1, 2], ["a", "b"])
+    c = _rows([3, 4], ["c", "d"])
+    b = pf.bundle(a=a, c=c)
+
+    handle = pf.concat(b.field("a"), b.field("c"), out="combined")
+
+    assert isinstance(handle, pf.FieldHandle)
+    result = handle.collect()
+    eager = pf.concat(a, c)
+    pd.testing.assert_frame_equal(result.table, eager.table)
+
+
+def test_join_lazy_arm_collect_equals_eager():
+    left, right, _plan = _merge_inputs()
+    b = pf.bundle(left=left, right=right)
+
+    handle = pf.join(b.field("left"), b.field("right"), how="outer", out="plan")
+
+    assert isinstance(handle, pf.FieldHandle)
+    result = handle.collect()
+    eager = pf.join(left, right, how="outer")
+    pd.testing.assert_frame_equal(result.table, eager.table)

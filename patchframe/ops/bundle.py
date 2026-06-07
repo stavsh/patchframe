@@ -36,6 +36,7 @@ from patchframe.dataset.fields import BundleField, IndexField
 from patchframe.dataset.schema import Schema
 from patchframe.dataset.state import DatasetState
 from patchframe.ops.base import CompositionOperator, DatasetOperator, OperatorCall
+from patchframe.ops.signature import DatasetReturn, FieldInput
 from patchframe.ops.transitions import (
     Cardinality,
     CouplingsTransition,
@@ -163,7 +164,8 @@ class extract(DatasetOperator):
         index_identity=IndexIdentityTransition.custom(),
     )
     cardinality = Cardinality.UNKNOWN
-    field_handle_inputs = ("field",)
+    field = FieldInput(field_type=BundleField)
+    returns = DatasetReturn()  # an exit bridge: a handle operand still yields a Dataset
 
     def run(self, call: OperatorCall, transitions: TransitionPlan) -> Dataset:
         bundle_ds = call.datasets[0]

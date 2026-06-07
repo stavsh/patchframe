@@ -580,6 +580,35 @@ class Operator(metaclass=OperatorMeta):
         self._reject_unresolved_field_handles(resolved_args, resolved_kwargs)
         return tuple(resolved_args), resolved_kwargs
 
+    def _resolve_field_handles_for_dataset(
+        self,
+        dataset: Dataset,
+        args: tuple[Any, ...],
+        kwargs: Mapping[str, Any],
+    ) -> tuple[tuple[Any, ...], dict[str, Any], tuple[Any, ...]]:
+        """Validate and resolve field-handle inputs against an explicit dataset.
+
+        The shared path for operators handed a primary ``dataset`` explicitly that
+        also accept field-scoped ``FieldHandle`` operands referring to fields *in*
+        it — ``DatasetOperator`` conceptually, and plan ops such as
+        ``window_expansion_plan``. Any handles must share one ``DatasetContext``
+        whose current snapshot is ``dataset``; declared field-slot handles are then
+        resolved to local selectors. Returns ``(args, kwargs, reference_contexts)``.
+        """
+
+        contexts = self._assert_field_handles_allowed(*args, *tuple(kwargs.values()))
+        if len(contexts) > 1:
+            raise ValueError(f"{self.name}: FieldHandles must share one DatasetContext.")
+        if contexts and dataset is not contexts[0].dataset:
+            raise ValueError(
+                f"{self.name}: FieldHandles resolve against their DatasetContext's "
+                "current dataset snapshot."
+            )
+        resolved_args, resolved_kwargs = self._resolve_field_handle_inputs(
+            dataset.schema, args, kwargs
+        )
+        return resolved_args, resolved_kwargs, contexts
+
     def _normalize_bound_params(self, params: dict[str, Any]) -> dict[str, Any]:
         unknown = set(params) - set(self.__parameters__)
         if unknown:
@@ -979,11 +1008,45 @@ class PlanOperator(Operator):
         return Operator.__call__(self, *args, **kwargs)
 
     def normalize_call(self, *args: Any, **kwargs: Any) -> OperatorCall:
+        # Plan ops that declare a source dataset (a ``DatasetInput`` slot) get the
+        # same primary-dataset + field-handle normalization dataset ops do; the
+        # rest keep the generic args/kwargs passthrough.
+        sig = self.signature
+        if sig is not None and sig.dataset_slots():
+            return self._normalize_source_plan_call(args, kwargs)
         return OperatorCall(
             operator=self,
             args=args,
             kwargs=kwargs,
             reference_contexts=self._assert_field_handles_allowed(args, kwargs),
+        )
+
+    def _normalize_source_plan_call(
+        self,
+        args: tuple[Any, ...],
+        kwargs: Mapping[str, Any],
+    ) -> OperatorCall:
+        """Normalize a plan call whose first operand is an explicit source dataset.
+
+        The plan-op counterpart to ``DatasetOperator.normalize_call``: the first
+        positional is the source ``Dataset``, and field-scoped handles are resolved
+        against it through the shared path. Plans are sibling artifacts, so no
+        ``DatasetContext`` is advanced.
+        """
+
+        if not args or not isinstance(args[0], Dataset):
+            raise TypeError(f"{self.name} expects a Dataset as the first argument.")
+        dataset = args[0]
+        rest, resolved_kwargs, contexts = self._resolve_field_handles_for_dataset(
+            dataset, args[1:], dict(kwargs)
+        )
+        return OperatorCall(
+            operator=self,
+            datasets=(dataset,),
+            states=(dataset.state,),
+            args=rest,
+            kwargs=resolved_kwargs,
+            reference_contexts=contexts,
         )
 
     def validate_result(self, call: OperatorCall, result: Any) -> None:

@@ -10,6 +10,7 @@ from patchframe.dataset.fields import IndexColumnField, IndexField
 from patchframe.dataset.schema import Schema
 from patchframe.dataset.state import DatasetState
 from patchframe.ops.base import DatasetOperator
+from patchframe.ops.signature import DatasetInput, FieldOutput, FieldReturn, ParamInput
 from patchframe.ops.transitions import (
     Cardinality,
     IndexIdentityTransition,
@@ -20,7 +21,12 @@ from patchframe.ops.transitions import (
 
 
 class set_index(DatasetOperator):
-    """Set a table column as the dataset index."""
+    """Set a table column as the dataset index.
+
+    Rewrites the schema and mints a new index identity (and uniqueness is a
+    global property), so it is not coupling-able: its lazy arm lifts onto a
+    ``BundleField`` carrier.
+    """
 
     transitions = TransitionPlan(
         schema=SchemaTransition.rewrite(),
@@ -28,6 +34,10 @@ class set_index(DatasetOperator):
     )
     cardinality = Cardinality.PRESERVE
     per_row_independent = PerRowIndependence.DEPENDENT  # index uniqueness is global
+    dataset = DatasetInput()
+    field = ParamInput()
+    out = FieldOutput()
+    returns = FieldReturn()
 
     def apply_schema(
         self,

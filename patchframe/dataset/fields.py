@@ -163,6 +163,21 @@ class IndexField(Field):
         Field.__post_init__(self)
         object.__setattr__(self, "primary", True)
 
+    def validate_column(self, series: pd.Series) -> None:
+        """Validate the index: dtype, plus that the table index is named for it.
+
+        The DataFrame index *is* the ``IndexField``, so the two names must agree —
+        a dataset's row identity should be self-describing. ``Schema.validate_table``
+        passes ``table.index.to_series()``, whose ``name`` is the index name.
+        """
+
+        Field.validate_column(self, series)
+        if series.name != self.name:
+            raise ValueError(
+                f"IndexField '{self.name}': the table index must be named "
+                f"{self.name!r}, got {series.name!r}."
+            )
+
 
 @dataclass(frozen=True, slots=True)
 class IndexColumnField(Field):

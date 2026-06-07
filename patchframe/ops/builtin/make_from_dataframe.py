@@ -7,7 +7,7 @@ import pandas as pd
 from patchframe.data.accessor import DataAccessor
 from patchframe.data.manager import SourceManager, get_default_manager
 from patchframe.dataset.couplings import CouplingSet
-from patchframe.dataset.fields import DataField
+from patchframe.dataset.fields import DataField, IndexField
 from patchframe.dataset.provenance import DatasetSourceInfo
 from patchframe.dataset.schema import Schema
 from patchframe.dataset.state import DatasetState
@@ -79,6 +79,14 @@ class make_from_dataframe(CreationOperator):
 
         should_copy = self.resolve_param("copy", copy)
         working_table = table.copy() if should_copy else table
+
+        # Name the table index after the schema's primary IndexField so row
+        # identity is self-describing. Index-name-sensitive operators (set_index,
+        # concat) and IndexField.validate_column rely on this.
+        index_field = next((f for f in schema.fields if isinstance(f, IndexField)), None)
+        if index_field is not None and working_table.index.name != index_field.name:
+            working_table = working_table.rename_axis(index_field.name)
+
         schema.validate_table(working_table)
 
         if source_manager is not None:

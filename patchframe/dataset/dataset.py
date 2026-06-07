@@ -27,6 +27,7 @@ from patchframe.dataset.state import DatasetState
 
 if TYPE_CHECKING:
     from patchframe.dataset.context import DatasetContext, FieldHandle, FieldSelection
+    from patchframe.dataset.fields import Field
 
 
 @dataclass(slots=True)
@@ -87,6 +88,17 @@ class Dataset:
 
         context = self._authoring_context()
         return FieldSelection(tuple(context.field(name) for name in names))
+
+    def new_field(self, field_def: Field) -> FieldHandle:
+        """Declare a new null-filled field and return a handle to it.
+
+        Sugar over the cached authoring cursor (like ``field``/``fields``): the
+        field is added to the schema (filled with nulls) and the cursor advances,
+        so repeated ``new_field`` calls share one context and their handles
+        co-resolve — ready to pass together to ``assign``.
+        """
+
+        return self._authoring_context().new_field(field_def)
 
     def _authoring_context(self) -> DatasetContext:
         """Return the authoring context for handles minted off this facade.

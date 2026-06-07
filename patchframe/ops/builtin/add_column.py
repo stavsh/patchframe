@@ -15,7 +15,7 @@ from patchframe.dataset.field_composition import (
 from patchframe.dataset.fields import Field
 from patchframe.dataset.schema import Schema
 from patchframe.dataset.state import DatasetState
-from patchframe.ops.base import DatasetOperator
+from patchframe.ops.base import MISSING, DatasetOperator
 from patchframe.ops.transitions import (
     Cardinality,
     PerRowIndependence,
@@ -42,6 +42,37 @@ class add_column(DatasetOperator):
     transitions = TransitionPlan(schema=SchemaTransition.extend())
     cardinality = Cardinality.PRESERVE
     per_row_independent = PerRowIndependence.INDEPENDENT
+
+    def __call__(self, target: Any = MISSING, *args: Any, couplings: tuple[Coupling, ...] = (), **kwargs: Any) -> Any:
+        # Handle form: add_column(field_handle, values) fills a field created with
+        # new_field (the single-field counterpart to assign's handle form) and
+        # returns the handle. Eager form: add_column(dataset, field_def, values).
+        from patchframe.dataset.context import FieldHandle
+
+        if isinstance(target, FieldHandle):
+            values = args[0] if args else kwargs.get("values", MISSING)
+            return self._fill_field(target, values, couplings)
+        return DatasetOperator.__call__(self, target, *args, couplings=couplings, **kwargs)
+
+    def _fill_field(
+        self,
+        handle: Any,
+        values: Any,
+        couplings: tuple[Coupling, ...],
+    ) -> Any:
+        from patchframe.ops.builtin.assign import assign
+
+        if values is MISSING:
+            raise TypeError("add_column(handle, values): the handle form needs values.")
+        context = handle.dataset_context
+        name = handle.name
+        # The field already exists (null-filled via new_field); filling it is
+        # assign-to-existing, so reuse assign's eager fill, then advance the cursor.
+        result = assign.instance()._apply(
+            context.dataset, columns={name: values}, couplings=tuple(couplings)
+        )
+        context.adopt(result)
+        return context.field(name)
 
     def apply_schema(
         self,

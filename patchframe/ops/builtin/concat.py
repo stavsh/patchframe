@@ -25,6 +25,7 @@ from patchframe.dataset.identity import (
 from patchframe.dataset.schema import Schema
 from patchframe.dataset.state import DatasetState
 from patchframe.ops.base import CompositionOperator, OperatorCall
+from patchframe.ops.signature import DatasetInput, FieldOutput, FieldReturn
 from patchframe.ops.builtin._composition import (
     derive_composed_couplings,
     normalize_collision,
@@ -55,6 +56,9 @@ class concat_rows(CompositionOperator):
     )
     cardinality = Cardinality.EXPAND
     per_row_independent = PerRowIndependence.INDEPENDENT
+    operands = DatasetInput(variadic=True)
+    out = FieldOutput()
+    returns = FieldReturn()
 
     def apply_schema(self, *states: DatasetState, **_: Any) -> Schema:
         _require_states(states, self.name)
@@ -117,6 +121,9 @@ class concat_columns(CompositionOperator):
 
     cardinality = Cardinality.PRESERVE
     per_row_independent = PerRowIndependence.UNKNOWN  # independent only when pre-aligned
+    operands = DatasetInput(variadic=True)
+    out = FieldOutput()
+    returns = FieldReturn()
 
     def apply_schema(
         self,
@@ -204,7 +211,16 @@ class concat_columns(CompositionOperator):
 
 
 class concat(CompositionOperator):
-    """Dispatch to ``concat_rows`` or ``concat_columns``."""
+    """Dispatch to ``concat_rows`` or ``concat_columns``.
+
+    The lazy arm captures ``concat`` as-called (including ``axis``) and defers it;
+    the row/column variant is re-dispatched at ``collect`` time, so the
+    interpreter stays agnostic to which concrete concat runs.
+    """
+
+    operands = DatasetInput(variadic=True)
+    out = FieldOutput()
+    returns = FieldReturn()
 
     def __call__(self, *datasets: Dataset, axis: int = 0, **kwargs: Any) -> Dataset:
         return super().__call__(*datasets, axis=axis, **kwargs)

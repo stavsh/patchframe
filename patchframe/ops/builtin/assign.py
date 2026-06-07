@@ -8,6 +8,7 @@ from typing import Any
 import pandas as pd
 
 from patchframe.dataset.couplings import Coupling
+from patchframe.dataset.dataset import Dataset
 from patchframe.dataset.field_composition import (
     CompositionContext,
     compose_column,
@@ -47,12 +48,49 @@ class assign(DatasetOperator):
 
     def __call__(
         self,
-        dataset=MISSING,
+        target: Any = MISSING,
+        values: Any = MISSING,
+        /,
         *,
         couplings: tuple[Coupling, ...] = (),
         **columns: Any,
-    ):
-        return self._dispatch(dataset, columns=columns, couplings=couplings)
+    ) -> Any:
+        # Two call shapes (an @overload-style split on the first operand):
+        #   assign(dataset, a=..., b=...)   eager: a Dataset + column kwargs.
+        #   assign([h_a, h_b], values)      handle: a selection of target field
+        #     handles (typically from ds.new_field(...)) + a frame/mapping of
+        #     values keyed by field name. ``target``/``values`` are positional-only
+        #     so "target"/"values" stay usable as column names in the eager form.
+        if _is_field_targets(target):
+            return self._assign_to_fields(target, values, couplings)
+        return self._dispatch(target, columns=columns, couplings=couplings)
+
+    def _assign_to_fields(
+        self,
+        target: Any,
+        values: Any,
+        couplings: tuple[Coupling, ...],
+    ) -> Any:
+        from patchframe.dataset.context import FieldSelection
+
+        if values is MISSING:
+            raise TypeError(
+                "assign(targets, values): the handle form needs a values frame or "
+                "mapping keyed by field name."
+            )
+        selection = (
+            target if isinstance(target, FieldSelection) else FieldSelection(tuple(target))
+        )
+        context = selection.dataset_context
+        if context is None:
+            raise ValueError("assign: empty target selection.")
+        names = selection.names()
+        columns = {name: values[name] for name in names}
+        # Fill on the cursor's snapshot (no context effects), advance the shared
+        # cursor, and hand back the selection of filled fields.
+        result = self._apply(context.dataset, columns=columns, couplings=tuple(couplings))
+        context.adopt(result)
+        return FieldSelection(tuple(context.field(name) for name in names))
 
     def apply_schema(
         self,
@@ -107,6 +145,20 @@ class assign(DatasetOperator):
         **_: Any,
     ) -> tuple[Coupling, ...]:
         return tuple(couplings)
+
+
+def _is_field_targets(target: Any) -> bool:
+    """Whether ``target`` is the handle form: a selection / list of field handles."""
+
+    from patchframe.dataset.context import FieldHandle, FieldSelection
+
+    if isinstance(target, FieldSelection):
+        return True
+    return (
+        isinstance(target, (list, tuple))
+        and len(target) > 0
+        and all(isinstance(item, FieldHandle) for item in target)
+    )
 
 
 def _normalize_assignment(name: str, value: Any) -> tuple[Field, Any]:

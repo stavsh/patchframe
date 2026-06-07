@@ -71,6 +71,26 @@ class DatasetContext:
             name_hint=field_def.name,
         )
 
+    def new_field(self, field_def: Field) -> FieldHandle:
+        """Add a null-filled field to the snapshot and advance this cursor.
+
+        A schema-mutating authoring primitive (outside any operator): it adds
+        ``field_def`` initialised to nulls, advances this cursor to the new
+        snapshot, and returns a handle to the field. Successive ``new_field``
+        calls accrete on the one cursor — that is why it is a cursor operation,
+        not a pure ``Dataset`` function — so several new fields co-resolve and can
+        be passed together, e.g.
+        ``assign([ctx.new_field(a), ctx.new_field(b)], values)``.
+        """
+
+        from patchframe.ops.builtin.add_column import add_column
+
+        filled = add_column.instance()._apply(
+            self.dataset, field_def, [None] * len(self.dataset)
+        )
+        self.adopt(filled)
+        return self.field(field_def.name)
+
 
 @dataclass(frozen=True, slots=True)
 class FieldHandle:
@@ -159,6 +179,22 @@ class FieldSelection:
         """Resolve each handle against the shared context's current snapshot."""
 
         return tuple(handle.resolve() for handle in self.handles)
+
+    def collect(self) -> Dataset:
+        """Materialize pending couplings for the selected fields; return the dataset.
+
+        The multi-field terminal (the counterpart to ``FieldHandle.collect()``).
+        The selection shares one context, so this collects each field in turn and
+        returns the single resulting dataset snapshot.
+        """
+
+        context = self.dataset_context
+        if context is None:
+            raise ValueError("FieldSelection.collect: empty selection.")
+        #TODO: collect here can possibly run the same coupling multiple times if the selected fields share couplings; or if another field's coupling runs after the second field's coupling but before the first field's coupling, then the first field's coupling will run twice. We could track which couplings have already been run in this collection pass and skip them on subsequent fields, but that adds complexity and overhead; it may be simpler to just document that users should avoid passing overlapping selections to operators with side effects.
+        for handle in self.handles:
+            handle.collect()
+        return context.dataset
 
 
 def get_active_dataset_context() -> DatasetContext | None:

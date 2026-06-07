@@ -18,6 +18,7 @@ SOURCE_INDEX_FIELD = "source_index"
 PLAN_METADATA_KEY = "patchframe.plan"
 
 
+#TODO: make plan should actually be a CreationOperator
 class make_plan(PlanOperator):
     """Build a plan dataset with one foreign index into a target dataset."""
 

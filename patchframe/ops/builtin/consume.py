@@ -24,6 +24,7 @@ import pandas as pd
 from patchframe.dataset.couplings import Coupling
 from patchframe.dataset.state import DatasetState
 from patchframe.ops.base import DatasetOperator
+from patchframe.ops.signature import DatasetReturn, FieldInput
 from patchframe.ops.transitions import (
     Cardinality,
     PerRowIndependence,
@@ -45,7 +46,8 @@ class consume(DatasetOperator):
     transitions = TransitionPlan(schema=SchemaTransition.preserve())
     cardinality = Cardinality.PRESERVE
     per_row_independent = PerRowIndependence.UNKNOWN  # inherited from the couplings it runs
-    field_handle_inputs = ("target",)
+    target = FieldInput()
+    returns = DatasetReturn()  # the materialization terminal: a handle still yields a Dataset
 
     def apply_table(
         self,

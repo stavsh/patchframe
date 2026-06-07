@@ -18,6 +18,7 @@ from patchframe.dataset.identity import primary_index_field
 from patchframe.dataset.schema import Schema
 from patchframe.dataset.state import DatasetState
 from patchframe.ops.base import MISSING, ContextEffect, Operator, OperatorCall, PlanConsumerMixin
+from patchframe.ops.signature import DatasetInput, FieldOutput, FieldReturn
 from patchframe.ops.builtin._composition import normalize_field_names, normalize_table_to_schema
 from patchframe.ops.transitions import (
     Cardinality,
@@ -43,6 +44,10 @@ class explode(PlanConsumerMixin, Operator):
     )
     cardinality = Cardinality.EXPAND
     per_row_independent = PerRowIndependence.INDEPENDENT
+    source = DatasetInput()
+    plan = DatasetInput()
+    out = FieldOutput()
+    returns = FieldReturn()
 
     def __call__(
         self,
@@ -51,13 +56,18 @@ class explode(PlanConsumerMixin, Operator):
         *,
         foreign_index_field: str | None = None,
         overlay_fields: str | Iterable[str] | None = None,
+        out: str | None = None,
     ) -> Dataset:
+        # ``out`` flows through to the interpreter (Operator.__call__): with
+        # bundle handle operands it names the deferred result cell; the eager
+        # path ignores it.
         return Operator.__call__(
             self,
             source,
             plan,
             foreign_index_field=foreign_index_field,
             overlay_fields=overlay_fields,
+            out=out,
         )
 
     def normalize_call(
@@ -67,6 +77,7 @@ class explode(PlanConsumerMixin, Operator):
         *,
         foreign_index_field: str | None = None,
         overlay_fields: str | Iterable[str] | None = None,
+        out: str | None = None,
     ) -> OperatorCall:
         self._assert_field_handles_allowed(
             source,

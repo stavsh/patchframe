@@ -117,10 +117,13 @@ need consolidation before that helper becomes a long-term public concept.
 
 ## Dataset identity invariant
 
-The table index is a hard dataset invariant: it must be unique. In patchframe,
-the DataFrame index is row identity, not only a pandas alignment label. This
-constraint may be relaxed around the number of index-like fields in the future,
-but the primary dataset row identity must remain unique.
+The table index is a hard dataset invariant: it must be unique, and it is named
+after the schema's primary `IndexField` so row identity is self-describing.
+`IndexField.validate_column` enforces the name match, and `make_from_dataframe`
+names the index for you (operators that rename or rebuild the index keep the two
+in sync). In patchframe, the DataFrame index is row identity, not only a pandas
+alignment label. This constraint may be relaxed around the number of index-like
+fields in the future, but the primary dataset row identity must remain unique.
 
 ## Semantic state propagation
 
@@ -238,11 +241,14 @@ result = kept.collect()                              # apply now -> Dataset
 ```
 
 Handles come from the dataset entry bridge — `ds.field("image")` /
-`ds.fields(["a", "b"])` — returning context-bound `FieldHandle` /
-`FieldSelection` values that follow a field's *identity* across operators (not
-its name). A handle resolves only inside its owning `DatasetContext`. A deferred
-op threads one context forward so chains compose; an eager op forks a new
-`Dataset` facade.
+`ds.fields(["a", "b"])` for existing fields, or `ds.new_field(field_def)` to
+declare a new (null-filled) field and get its handle — returning context-bound
+`FieldHandle` / `FieldSelection` values that follow a field's *identity* across
+operators (not its name). A handle resolves only inside its owning
+`DatasetContext`. A deferred op threads one context forward so chains compose; an
+eager op forks a new `Dataset` facade. `new_field` is a *cursor* operation (it
+advances the shared context), so successive `new_field` calls accrete and their
+handles co-resolve — ready to pass together to an operator.
 
 ### Where a deferred operation lives
 
@@ -289,11 +295,25 @@ deferred by operand type and same-level vs bundle by `coupling_able`, and return
 the declared handle or `Dataset`. Operators implement only their `apply_*` hooks;
 the duality is provided for free.
 
-Currently wired: `where`, `merge`, `bind_slice`, `bind_materialize`,
-`bind_dimensions`. The remaining transforms (`rename`/`drop`/`keep`/`explode`/
-`concat`/`set_index`/`window_expansion_plan`) keep the eager form and gain the
-deferred arm as they migrate. Creation and plan operators are eager-only entry
-points; deferred creation is a future workload-gated tier.
+The duality is wired across the transform operators. `where`, `merge`, `concat`
+(and `concat_rows`/`concat_columns`), `rename`, `drop`, `keep`, `set_index`,
+`join`, and `explode` defer onto a `BundleField` carrier; `bind_slice`,
+`bind_materialize`, and `bind_dimensions` defer in place as same-level couplings.
+`assign`/`add_column` produce *named* columns from values rather than from a field
+handle, so their handle form creates the targets first with `new_field`:
+`assign([h_a, h_b], values)` fills the (null-filled) fields from a frame keyed by
+name and returns a `FieldSelection`; `add_column(handle, values)` is the
+single-field counterpart, returning the handle — no `out` needed, since the
+outputs are already named.
+`window_expansion_plan` is a transform (source → plan) and a bundle-lifter like
+`explode`; it is eager pending a slot-type-aware gate that tells its eager field
+references apart from a deferred source. Only the true creation operators
+(`make_from_dataframe`, `make_plan`) are eager-only entry points; deferred
+creation is a future workload-gated tier.
+
+See `examples/lazy_eager_duality_usage.py` for a runnable end-to-end pipeline
+(`bundle` → deferred `merge`/`where`/`drop` → one `collect()`), checked against
+the eager equivalent.
 
 ## Composition policies
 
@@ -751,9 +771,11 @@ baseline:
   `SelectionInput` / `ParamInput` / `FieldOutput` slots) routes same-level
   couplings vs `BundleField` bundles by the derived `coupling_able` test, so
   operators get both arms from declarations alone — no hand-written `__call__`
-  dispatch. Wired on `where`, `merge`, `bind_slice`, `bind_materialize`, and
-  `bind_dimensions`; the entry/exit bridges (`bundle`/`extract`/`flatten`/
-  `collect`) and `Dataset.field()`/`fields()` complete the surface. See
+  dispatch. Wired across the transform operators (`where`, `merge`, `concat`,
+  `rename`, `drop`, `keep`, `set_index`, `join`, `explode`, and the `bind_*`
+  family); the entry/exit bridges (`bundle`/`extract`/`flatten`/`collect`) and
+  `Dataset.field()`/`fields()` complete the surface. A runnable end-to-end
+  example lives in `examples/lazy_eager_duality_usage.py`. See
   [Lazy and eager duality](#lazy-and-eager-duality).
 
 ## Performance Direction
