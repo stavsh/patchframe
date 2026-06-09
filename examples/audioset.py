@@ -380,12 +380,12 @@ def bind_audio_segments(
     end_field: str = SEGMENT_END_FIELD,
 ) -> pf.Dataset:
     """Bind AudioSet segment columns so row access returns sliced audio arrays."""
-    ds = pf.bind_dimensions(
+    ds = pf.compose_slice(
         dataset,
         slice_field=slice_field,
         bindings={"time": (start_field, end_field)},
     )
-    return pf.bind_slice(ds, slice_field=slice_field, data_field=audio_field)
+    return pf.slice_data(ds, slice_field=slice_field, data_field=audio_field)
 
 
 def merge_audio_labels(
@@ -416,7 +416,7 @@ def merge_audio_labels(
             audio_field=audio_field,
         )
     if materialize_audio:
-        merged = pf.bind_materialize(merged, audio_field)
+        merged = pf.materialize(merged, audio_field)
     return merged
 
 

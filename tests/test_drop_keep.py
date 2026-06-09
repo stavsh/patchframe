@@ -1,4 +1,4 @@
-"""Tests for drop, keep, bind_dimensions operators and make_mock_dataset_from_dims."""
+"""Tests for drop, keep, compose_slice operators and make_mock_dataset_from_dims."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from patchframe.dataset.fields import (
 from patchframe.dataset.schema import Schema
 from patchframe.dataset.state import DatasetState
 from patchframe.ops.builtin.add_column import add_column
-from patchframe.ops.builtin.bind_dimensions import bind_dimensions
+from patchframe.ops.builtin.compose_slice import compose_slice
 from patchframe.ops.builtin.consume import consume
 from patchframe.ops.builtin.drop import drop
 from patchframe.ops.builtin.keep import keep
@@ -164,7 +164,7 @@ class TestKeep:
 
 
 # ---------------------------------------------------------------------------
-# bind_dimensions
+# compose_slice
 # ---------------------------------------------------------------------------
 
 
@@ -178,25 +178,25 @@ class TestBindDimensions:
 
     def test_adds_dimensioned_slice_field_to_schema(self):
         ds = self._ds_with_dim_fields()
-        ds2 = bind_dimensions(ds, slice_field="clip", bindings={"x": ("start", "end")})
+        ds2 = compose_slice(ds, slice_field="clip", bindings={"x": ("start", "end")})
         assert ds2.schema.has("clip")
         assert isinstance(ds2.schema.get("clip"), DimensionedSliceField)
 
     def test_adds_null_column_to_table(self):
         ds = self._ds_with_dim_fields()
-        ds2 = bind_dimensions(ds, slice_field="clip", bindings={"x": ("start", "end")})
+        ds2 = compose_slice(ds, slice_field="clip", bindings={"x": ("start", "end")})
         assert "clip" in ds2.table.columns
         assert ds2.table["clip"].isna().all()
 
     def test_adds_bind_dimensions_coupling(self):
         ds = self._ds_with_dim_fields()
-        ds2 = bind_dimensions(ds, slice_field="clip", bindings={"x": ("start", "end")})
+        ds2 = compose_slice(ds, slice_field="clip", bindings={"x": ("start", "end")})
         assert len(ds2.couplings.couplings) == 1
         assert isinstance(ds2.couplings.couplings[0], BindDimensions)
 
     def test_consume_produces_correct_slices(self):
         ds = self._ds_with_dim_fields()
-        ds2 = bind_dimensions(ds, slice_field="clip", bindings={"x": ("start", "end")})
+        ds2 = compose_slice(ds, slice_field="clip", bindings={"x": ("start", "end")})
         ds3 = consume(ds2, "clip")
         assert ds3.table["clip"].iloc[0].dims["x"] == slice(0, 20)
         assert ds3.table["clip"].iloc[1].dims["x"] == slice(10, 50)
@@ -210,33 +210,33 @@ class TestBindDimensions:
         ds = add_column(ds, DimensionField.from_dim(x, "x1", dtype=int), [15])
         ds = add_column(ds, DimensionField.from_dim(y, "y0", dtype=int), [2])
         ds = add_column(ds, DimensionField.from_dim(y, "y1", dtype=int), [8])
-        ds = bind_dimensions(ds, slice_field="clip", bindings={"x": ("x0", "x1")})
-        ds = bind_dimensions(ds, slice_field="clip", bindings={"y": ("y0", "y1")})
+        ds = compose_slice(ds, slice_field="clip", bindings={"x": ("x0", "x1")})
+        ds = compose_slice(ds, slice_field="clip", bindings={"y": ("y0", "y1")})
         ds2 = consume(ds, "clip")
         assert ds2.table["clip"].iloc[0].dims == {"x": slice(5, 15), "y": slice(2, 8)}
 
     def test_idempotent_on_duplicate_call(self):
         ds = self._ds_with_dim_fields()
-        ds2 = bind_dimensions(ds, slice_field="clip", bindings={"x": ("start", "end")})
-        ds3 = bind_dimensions(ds2, slice_field="clip", bindings={"x": ("start", "end")})
+        ds2 = compose_slice(ds, slice_field="clip", bindings={"x": ("start", "end")})
+        ds3 = compose_slice(ds2, slice_field="clip", bindings={"x": ("start", "end")})
         assert len(ds3.couplings.couplings) == 1
 
     def test_raises_if_slice_field_exists_as_wrong_type(self):
         ds = self._ds_with_dim_fields()
         ds = add_column(ds, ValueField(name="clip", dtype=float), [1.0, 2.0])
         with pytest.raises(TypeError, match="not DimensionedSliceField"):
-            bind_dimensions(ds, slice_field="clip", bindings={"x": ("start", "end")})
+            compose_slice(ds, slice_field="clip", bindings={"x": ("start", "end")})
 
     def test_raises_if_binding_field_missing(self):
         ds = self._ds_with_dim_fields()
         with pytest.raises(ValueError, match="not in schema"):
-            bind_dimensions(ds, slice_field="clip", bindings={"x": ("start", "nonexistent")})
+            compose_slice(ds, slice_field="clip", bindings={"x": ("start", "nonexistent")})
 
     def test_raises_if_binding_field_not_dimension_field(self):
         ds = self._ds_with_dim_fields()
         ds = add_column(ds, ValueField(name="label", dtype=str), ["a", "b"])
         with pytest.raises(TypeError, match="not a DimensionField"):
-            bind_dimensions(ds, slice_field="clip", bindings={"x": ("start", "label")})
+            compose_slice(ds, slice_field="clip", bindings={"x": ("start", "label")})
 
 
 # ---------------------------------------------------------------------------

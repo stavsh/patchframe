@@ -82,15 +82,32 @@ where the couplings that cannot be same-level live. This is `lazy-and-bundle.md`
 
 ## Fork decisions (provisional; revisit if a workload pushes back)
 
-- **`bind_*` stay declare-only.** They are coupling-able, so they never need a
-  bundle; they are the coupling-authoring layer *beneath* the duality, not
-  instances of the lift/in-level machinery. Whether to rename `bind_slice` →
-  `slice` (eager-applies / handle-defers) is a **naming** question deferred
-  until the verb convention is exercised by the bundle ops first.
-- **`ApplyOperator` carries a serializable call-spec** (phase 4), not today's
-  loose `operator + params`. The persisted spec is operator + normalized
-  args/kwargs + field bindings + `variant`; the live `OperatorCall`
-  (datasets/states/contexts/effects) stays runtime-only (§7).
+- **The coupling-authoring ops stay declare-only.** They are coupling-able, so
+  they never need a bundle; they are the coupling-authoring layer *beneath* the
+  duality, not instances of the lift/in-level machinery. **RESOLVED 2026-06-07:**
+  the `bind_` prefix was dropped now that the eager/lazy duality reads naturally
+  on a bare verb — `bind_materialize`→`materialize`, `bind_slice`→`slice_data`,
+  `bind_dimensions`→`compose_slice`. Old names stay as deprecated `pf.*` aliases
+  (top-level `__getattr__`). Semantics unchanged: they still record couplings;
+  the eager arm returns a `Dataset`, the handle arm a `FieldHandle`/`Selection`.
+- **`ApplyOperator` carries a serializable call-spec.** **DONE 2026-06-09.**
+  `ApplyOperator` now holds a `CallSpec` (operator + normalized `args`/`kwargs` +
+  `variant`) instead of a loose `operator + params`; it references its cells by
+  *name* (`inputs`/`output` `FieldRef`s), so the coupling pickles independently of
+  the cell datasets. The live `OperatorCall` keeps the runtime-only fields
+  (datasets/states/contexts/effects) and exposes `OperatorCall.spec()` as the
+  runtime→persisted bridge (§7). The spec normalizes the operator to its **class**
+  — the same by-reference handle the bundle-defer path records
+  (`defer_in_level(type(self), ...)`); operators are code (pickle by reference,
+  stable identity), dual-arm bound params are infra-only (`dataset_context`), and
+  behavioral per-call data lives in `kwargs`.
+  **Early unpicklability detection (user, 2026-06-09):** the failure mode to avoid
+  is an unpicklable arg (a `lambda` predicate) surfacing only at `.collect()`/save.
+  So `warn_if_unpicklable(call)` fires `UnpicklableCallWarning` at *defer* time —
+  when `defer_in_level`/`build_apply_bundle` records the coupling — not later. It
+  still replays in-process; the warning says the dataset can't be persisted/sent to
+  a worker while the coupling is present, and names the fix (module-level fn). The
+  category is filterable to an error to *require* picklable deferred chains.
 
 ## Phasing
 
@@ -148,13 +165,13 @@ substrate).
 - a **dataset slot** accepts a `Dataset` (eager) **or** a `FieldHandle`→
   `BundleField` (lazy / per-fiber — the audit's gap #2, the trigger for
   whole-dataset ops like `where`/`merge`);
-- a **field slot** accepts a typed `FieldHandle` (`bind_slice.slice_field :
+- a **field slot** accepts a typed `FieldHandle` (`slice_data.slice_field :
   DimensionedSliceField`) or a name;
 - an **output slot** — `FieldOutput`, the dual of `FieldInput` (option 2): the
   caller supplies the *name* of the produced field (`merge(…, out="merged")`),
   the op produces a `BundleField` of that name, and the lazy arm returns a handle
   to it — the chaining point, **inherent to every lifting op** (it's what makes a
-  lazy chain expressible). In-place ops (`bind_slice`) declare no output slot:
+  lazy chain expressible). In-place ops (`slice_data`) declare no output slot:
   their output is an input, resolved from the recorded coupling via `returns`;
 - plus `returns` (the eager-vs-lazy seam for the non-`FieldOutput` cases),
   same/cross-dataset validation, ambient-context behavior, and cursor
@@ -188,13 +205,13 @@ attributes, which `OperatorMeta` collects (in definition order, exactly like it
 already collects `Parameter`) into a metaclass-built `signature`; and the
 interpreter **seam** — `_field_input_slots()` sources the field-slot tuple from
 `signature.field_slots()` (else `field_handle_inputs`), with **no
-`normalize_call` rewrite** (the minimal/generic win). `bind_slice` migrated as
+`normalize_call` rewrite** (the minimal/generic win). `slice_data` migrated as
 the proof, behavior unchanged. **`FieldOutput`** (option 2) landed on the
 declaration side — collected by the metaclass into `signature.outputs`, the
 caller-named produced-field slot (`out`) inherent to lifting ops. *Remaining:*
 acting on `FieldOutput` (bind the `out` param → produced column → returned
 handle) lands with `merge`'s lazy arm (Phase 6, against a real consumer);
-migrate the other `field_handle_inputs` ops (note `bind_dimensions`' nested
+migrate the other `field_handle_inputs` ops (note `compose_slice`' nested
 `bindings` operand); the `ApplyOperator` serializable call-spec; the
 `DatasetInput` bundle-handle dispatch (Phase 5).
 
@@ -276,9 +293,9 @@ and materialized in one `collect()`, equals the eager pipeline
   operator-generic, so the remaining lifting ops reuse it.
 - **Same-level arm** — for coupling-able ops, run the op (records its coupling on
   the dataset, no bundle, no `out`) and return a handle to **`coupling.output_
-  field`** — one rule covering in-place (`bind_materialize`'s `field`) and fresh
-  (`bind_dimensions`'s `slice_field`) outputs. Wired on `bind_materialize` (in-
-  place) and `bind_dimensions` (nested `bindings` handles + fresh output) via
+  field`** — one rule covering in-place (`materialize`'s `field`) and fresh
+  (`compose_slice`'s `slice_field`) outputs. Wired on `materialize` (in-
+  place) and `compose_slice` (nested `bindings` handles + fresh output) via
   manual `__call__` branches.
 
 Both lazy arms return a chaining handle and propagate the context;
@@ -311,21 +328,24 @@ Both lazy arms return a chaining handle and propagate the context;
   instance `Parameter`. It names a positional argument so eager/lazy calls stay
   positionally symmetric and the deferred call is self-documenting.
 - **Output resolution** (`_lazy_output_names`): caller-supplied `FieldOutput`
-  value(s) for fresh outputs (`bind_dimensions.slice_field`,
+  value(s) for fresh outputs (`compose_slice.slice_field`,
   `merge`/`where.out`), else the `FieldInput` marked `output=True`
-  (`bind_slice.data_field`), else the sole `FieldInput` (`bind_materialize`).
+  (`slice_data.data_field`), else the sole `FieldInput` (`materialize`).
   Equivalent to `coupling.output_field` by construction.
 
 Migrations (each ran green): `where` (DatasetInput + ParamInput + FieldOutput,
-bundle arm) → `merge` (variadic DatasetInput, bundle arm) → `bind_materialize`
-(single in-place FieldInput, same-level) → `bind_dimensions` (FieldOutput
-`slice_field` + SelectionInput `bindings`, same-level/nested). **`bind_slice`
+bundle arm) → `merge` (variadic DatasetInput, bundle arm) → `materialize`
+(single in-place FieldInput, same-level) → `compose_slice` (FieldOutput
+`slice_field` + SelectionInput `bindings`, same-level/nested). **`slice_data`
 gained a lazy arm for free** — it had no manual branch; the interpreter routes
 it from its existing signature (the generalization proof). 397 passed.
 
-The binding's normalized call is what `ApplyOperator` will carry; its
-**serializability** (#2) stays a separate, deferrable persistence concern
-(a `where` lambda replays in-memory but won't pickle).
+The binding's normalized call is what `ApplyOperator` carries (as a `CallSpec`).
+**Serializability — RESOLVED 2026-06-09:** the coupling references cells by name
+and the spec normalizes the operator to its class, so it pickles by reference; an
+unpicklable arg (a `where` lambda) still replays in-memory but now surfaces a
+`UnpicklableCallWarning` at *defer* time rather than at `.collect()`/save. See the
+Phase-overview bullet and `tests/test_call_spec.py`.
 
 **Long-term direction (user, 2026-06-07):** make distinct operator call
 structures *explicit overloads* (à la PyTorch / `typing.overload`) rather than
@@ -334,12 +354,19 @@ one signature + a binding interpreter. The binding is deliberately shaped as
 the current single `OperatorSignature` is overload-of-one. Deferred until the
 single-signature interpreter is exercised across more ops.
 
-### Phase 7 — `bind_*` convention + contract integration
+### Phase 7 — naming convention + contract integration
 
-Resolve the `bind_*` naming convention once the verb pattern is proven. Wire
-`per_row_independent` into `assert_operator_contract` so the routing is
-mechanically verified, not just declared. Update `lazy-and-bundle.md` with the
-converged model.
+**Naming — DONE 2026-06-07.** The `bind_` prefix is dropped:
+`bind_materialize`→`materialize`, `bind_slice`→`slice_data`,
+`bind_dimensions`→`compose_slice`, with deprecated `pf.bind_*` aliases (top-level
+`__getattr__`) for one release. (Names: `slice` was avoided to keep the builtin
+unshadowed; `compose_slice` over `dimensions` because it *composes* a slice spec
+from dimension columns, distinct from `slice_data` which *applies* a slice to a
+data field.)
+
+Still open: wire `per_row_independent` into `assert_operator_contract` so the
+routing is mechanically verified, not just declared; update `lazy-and-bundle.md`
+with the converged model.
 
 ## Out of scope (workload-gated)
 
@@ -352,8 +379,12 @@ streaming/fusion executor. `collect` runs the op now — it is not the executor.
 - **Bundle datasets through existing machinery.** Schema validation,
   unique-index, and the coupling engine must accept `BundleField` carriers.
   Audited lightly in phase 0; re-audit as touched in phases 3/6.
-- **Carried call-spec serialization.** The persisted spec must round-trip
-  (§7); live state must not leak into it. Phase 4 tests pickle round-trips.
+- **Carried call-spec serialization.** *Addressed 2026-06-09.* The persisted
+  spec round-trips (§7) and live state does not leak into it (`CallSpec` drops
+  datasets/states/contexts/effects); `tests/test_call_spec.py` covers the
+  `ApplyOperator`/`CouplingSet` pickle round-trip plus the early
+  `UnpicklableCallWarning`. Residual risk is only the genuinely-unpicklable arg,
+  now caught at defer time.
 - **`UNKNOWN` capability → conservative routing.** An undeclared/dynamic op
   (`consume`, unaligned `concat_columns`) fails the 3-part test and routes to a
   bundle — safe, never a silent same-level misclassification.

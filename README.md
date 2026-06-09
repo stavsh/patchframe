@@ -250,6 +250,12 @@ eager op forks a new `Dataset` facade. `new_field` is a *cursor* operation (it
 advances the shared context), so successive `new_field` calls accrete and their
 handles co-resolve — ready to pass together to an operator.
 
+A `FieldHandle` is also iterable for the eager per-row scan:
+`for item_id, mask in materialize(ds.field("mask")).items(): ...` drives
+coupling-aware row access (`dataset[item_id][name]`), materializing one value at
+a time — the training memory profile — rather than bulk-loading the column.
+(`__iter__` yields just the values.)
+
 ### Where a deferred operation lives
 
 A deferred operation is recorded as a coupling. Operators that only add or fill a
@@ -268,6 +274,16 @@ flat↔bundle morphisms are themselves ordinary operators:
 `FieldHandle.collect()` is the terminal that materializes a pending field; it is
 the single carve-out to "handles do not execute".
 
+A recorded `ApplyOperator` carries a serializable `CallSpec` — the operator
+(by class reference) plus normalized `args`/`kwargs` — and names its input/output
+cells rather than holding them, so a deferred chain pickles independently of its
+datasets (for persistence or worker dispatch). If a deferred call carries
+something unpicklable (typically a `lambda` predicate), patchframe raises
+`UnpicklableCallWarning` *at the moment the coupling is recorded*, not later at
+`collect()` or save time; it still replays in-process, and the category can be
+filtered to an error to require persistable chains. Pass a module-level function
+instead of a `lambda`.
+
 ### Declaring operands
 
 Operators declare their call structure dataclass-style, as class attributes the
@@ -278,7 +294,7 @@ metaclass collects into an `OperatorSignature` (the same mechanism that collects
   the deferred per-fiber arm); `variadic=True` for N operands (`merge`).
 - `FieldInput` — a single field operand (a typed handle or a name);
   `output=True` marks a field that is also an in-place output
-  (`bind_slice.data_field`).
+  (`slice_data.data_field`).
 - `SelectionInput` — a multi-field operand.
 - `ParamInput` — a per-call positional-or-keyword parameter that is *not* an
   operand (a predicate, a collision strategy). Distinct from `Parameter`, which
@@ -297,8 +313,8 @@ the duality is provided for free.
 
 The duality is wired across the transform operators. `where`, `merge`, `concat`
 (and `concat_rows`/`concat_columns`), `rename`, `drop`, `keep`, `set_index`,
-`join`, and `explode` defer onto a `BundleField` carrier; `bind_slice`,
-`bind_materialize`, and `bind_dimensions` defer in place as same-level couplings.
+`join`, and `explode` defer onto a `BundleField` carrier; `slice_data`,
+`materialize`, and `compose_slice` defer in place as same-level couplings.
 `assign`/`add_column` produce *named* columns from values rather than from a field
 handle, so their handle form creates the targets first with `new_field`:
 `assign([h_a, h_b], values)` fills the (null-filled) fields from a frame keyed by
@@ -617,7 +633,7 @@ a source dataset row plus a slice. The current core shape is:
 
 `window_expansion_plan` is the first implementation. It accepts extents from
 either a single `DimensionedSliceField` or from explicit `DimensionField`
-bindings in the same style as `bind_dimensions`. Single-column inputs may
+bindings in the same style as `compose_slice`. Single-column inputs may
 contain null rows, which are skipped. Multi-field bindings reject nulls because
 partial bounds across multiple columns are ambiguous.
 
@@ -666,8 +682,8 @@ through `FieldIdentity`:
 with patches.context() as ctx:
     patch = ctx.field("patch")
     image = ctx.field("image")
-    bind_slice(patch, image)
-    bind_materialize(image)
+    slice_data(patch, image)
+    materialize(image)
     consume(image)
 
 patches = ctx.dataset
@@ -681,7 +697,7 @@ when the current context dataset is passed as an explicit input. `explode(plan)`
 uses the active context dataset as its source and advances that context.
 
 Field handles are intentionally not generic dataset pointers. Use them where an
-operator parameter names a specific field, such as `bind_slice(patch, image)`,
+operator parameter names a specific field, such as `slice_data(patch, image)`,
 `consume(image)`, `make_plan(ctx.field("item_id"), ...)`, or
 `window_expansion_plan(ctx.dataset, field=ctx.field("extent"), ...)`. Use
 `ctx.dataset` for whole-dataset operations such as `concat(...)`.
@@ -772,11 +788,22 @@ baseline:
   couplings vs `BundleField` bundles by the derived `coupling_able` test, so
   operators get both arms from declarations alone — no hand-written `__call__`
   dispatch. Wired across the transform operators (`where`, `merge`, `concat`,
-  `rename`, `drop`, `keep`, `set_index`, `join`, `explode`, and the `bind_*`
-  family); the entry/exit bridges (`bundle`/`extract`/`flatten`/`collect`) and
-  `Dataset.field()`/`fields()` complete the surface. A runnable end-to-end
-  example lives in `examples/lazy_eager_duality_usage.py`. See
+  `rename`, `drop`, `keep`, `set_index`, `join`, `explode`, and the coupling-
+  authoring `materialize`/`slice_data`/`compose_slice`); the entry/exit bridges
+  (`bundle`/`extract`/`flatten`/`collect`) and `Dataset.field()`/`fields()`
+  complete the surface. A runnable end-to-end example lives in
+  `examples/lazy_eager_duality_usage.py`. See
   [Lazy and eager duality](#lazy-and-eager-duality).
+- The coupling-authoring operators dropped their `bind_` prefix now that the
+  duality reads on a bare verb: `bind_materialize` → `materialize`, `bind_slice`
+  → `slice_data`, `bind_dimensions` → `compose_slice`. The old names remain as
+  deprecated `pf.*` aliases that warn and forward.
+- Deferred operator calls are recorded as `ApplyOperator` couplings carrying a
+  serializable `CallSpec` (operator-by-class + normalized `args`/`kwargs`),
+  referencing their cells by name so a deferred chain pickles independently of
+  its datasets. An unpicklable argument surfaces as `UnpicklableCallWarning` at
+  defer time (when the coupling is recorded), not at `collect()`/save; the
+  category is filterable to an error to require persistable chains.
 
 ## Performance Direction
 

@@ -34,8 +34,8 @@ from patchframe.data.windows import AxisWindow
 from patchframe.dataset.dataset import Dataset
 from patchframe.dataset.field_composition import ColumnCollisionStrategy
 from patchframe.dataset.state import DatasetState
-from patchframe.ops.builtin.bind_dimensions import bind_dimensions
-from patchframe.ops.builtin.bind_slice import bind_slice
+from patchframe.ops.builtin.compose_slice import compose_slice
+from patchframe.ops.builtin.slice_data import slice_data
 from patchframe.ops.builtin.concat import concat_columns, concat_rows
 from patchframe.ops.builtin.consume import consume
 from patchframe.ops.builtin.join import FieldEqualityJoin, IndexJoin, join
@@ -222,17 +222,17 @@ def _make_case(name: str, args: argparse.Namespace) -> OperationCase:
 
     if name == "consume_bind_dimensions":
         ds = _consume_dataset(rows, args)
-        ds = bind_dimensions(ds, slice_field="slice", bindings=dimension_bindings())
+        ds = compose_slice(ds, slice_field="slice", bindings=dimension_bindings())
         return _dataset_case(name, consume.instance(), ds, {"target": "slice"})
 
     if name == "consume_chained_dimensions":
         ds = _consume_dataset(rows, args)
-        ds = bind_dimensions(
+        ds = compose_slice(
             ds,
             slice_field="slice",
             bindings={"time": dimension_bindings()["time"]},
         )
-        ds = bind_dimensions(
+        ds = compose_slice(
             ds,
             slice_field="slice",
             bindings={
@@ -245,8 +245,8 @@ def _make_case(name: str, args: argparse.Namespace) -> OperationCase:
 
     if name == "consume_bind_slice":
         ds = _consume_dataset(rows, args)
-        ds = bind_dimensions(ds, slice_field="slice", bindings=dimension_bindings())
-        ds = bind_slice(ds, slice_field="slice", data_field="data")
+        ds = compose_slice(ds, slice_field="slice", bindings=dimension_bindings())
+        ds = slice_data(ds, slice_field="slice", data_field="data")
         target = ds.couplings.couplings[-1]
         return _dataset_case(name, consume.instance(), ds, {"target": target})
 

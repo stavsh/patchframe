@@ -90,7 +90,7 @@ Field handles carry field-type-specific affordances — `slice_field.windows(...
 `dim.overlaps(other)`, future ndarray-style introspection — but they **produce**
 specs / operands / couplings; **operators execute**. Three categories:
 
-- **Produce** (`.windows`, `.overlaps`, `.bind_slice`): operands an operator
+- **Produce** (`.windows`, `.overlaps`, `.slice_data`): operands an operator
   consumes. The core ergonomic win.
 - **Introspect** (`.shape`, `.dtype`): read-only; gated on the columnar
   batch-extent API (`design-constraints.md` §6); must not trigger silent
@@ -308,8 +308,8 @@ resolved at call time, not a fixed ClassVar. Its *deferred* form is fiber-scoped
 | `rename` | preserve | yes | same-level |
 | `drop` / `keep` | preserve | yes | same-level |
 | `add_column` / `assign` | preserve | yes | same-level (data chunk-aligned) |
-| `bind_slice` / `bind_materialize` | preserve | yes | same-level (declaration only) |
-| `bind_dimensions` | preserve | yes | same-level |
+| `slice_data` / `materialize` | preserve | yes | same-level (declaration only) |
+| `compose_slice` | preserve | yes | same-level |
 | `window_expansion_plan` | expand | yes | streaming lift |
 | `explode` | expand | yes | streaming lift |
 | `concat_rows` | expand | yes | streaming lift (stream A then B) |

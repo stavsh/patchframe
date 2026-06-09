@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -129,6 +129,27 @@ class FieldHandle:
         from patchframe.ops.bundle import _collect
 
         return _collect(self.dataset_context.dataset, self.name)
+
+    def items(self) -> Iterator[tuple[Any, Any]]:
+        """Iterate ``(item_id, value)`` over the field's rows, materializing per row.
+
+        Each value comes from coupling-aware row access (``dataset[item_id][name]``),
+        which consumes that row's couplings — so a bound ``Materialize`` (e.g.
+        ``materialize(ds.field(name)).items()``) yields arrays one at a time, the
+        training memory profile, rather than a bulk ``collect()``. For a plain
+        value column it yields the values directly.
+        """
+
+        dataset = self.dataset_context.dataset
+        name = self.name
+        for item_id in dataset.table.index:
+            yield item_id, dataset[item_id][name]
+
+    def __iter__(self) -> Iterator[Any]:
+        """Iterate the field's per-row values (see :meth:`items`)."""
+
+        for _, value in self.items():
+            yield value
 
 
 @dataclass(frozen=True, slots=True)

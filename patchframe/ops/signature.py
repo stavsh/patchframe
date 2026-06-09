@@ -48,7 +48,7 @@ class FieldInput:
     the expected concrete ``Field`` subtype (e.g. ``DimensionedSliceField``);
     ``None`` accepts any. (Type enforcement is a later/ contract-suite step; the
     declaration lands now.) ``output=True`` marks a field that is also the
-    operator's in-place output (``bind_slice``'s ``data_field``), so the lazy
+    operator's in-place output (``slice_data``'s ``data_field``), so the lazy
     arm returns a chaining handle to it.
     """
 
@@ -133,7 +133,7 @@ class FieldOutput:
     operator of that kind. ``field_type`` is the produced field's type
     (``BundleField`` for the per-fiber lift result).
 
-    In-place outputs (e.g. ``bind_slice``'s ``data_field``) declare no
+    In-place outputs (e.g. ``slice_data``'s ``data_field``) declare no
     ``FieldOutput`` — they keep a ``returns`` kind and resolve from the recorded
     op; bridges return a ``Dataset``.
     """

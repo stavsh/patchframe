@@ -7,9 +7,10 @@ no separate lazy API and no ``.lazy()`` switch:
     op(handle, out=...)  # deferred: record the op, return a chaining FieldHandle
 
 A deferred chain records its operators as couplings on a one-row ``bundle``
-carrier and materializes only at ``collect()``. Coupling-able ops (``bind_*``)
-defer *in place* without a bundle. This script builds the same work both ways and
-checks they agree. It needs no external data:
+carrier and materializes only at ``collect()``. Coupling-able ops
+(``materialize`` / ``slice_data`` / ``compose_slice``) defer *in place* without a
+bundle. This script builds the same work both ways and checks they agree. It
+needs no external data:
 
     python examples/lazy_eager_duality_usage.py
 """
@@ -40,12 +41,22 @@ def _labels() -> pf.Dataset:
     )
 
 
+def _score_at_least_20(df: pd.DataFrame) -> "pd.Series":
+    """A module-level predicate, not a lambda, so a deferred chain that records
+    it stays picklable — the deferred carrier is the persistable/dispatchable
+    artifact, and a local lambda would trip ``UnpicklableCallWarning`` at defer
+    time. The same predicate drives both the eager and deferred ``where`` below.
+    """
+
+    return df["score"] >= 20
+
+
 def eager_pipeline(scores: pf.Dataset, labels: pf.Dataset) -> pf.Dataset:
     """Each step materializes immediately and returns a ``Dataset``."""
 
     plan = pf.join(scores, labels, how="inner")
     merged = pf.merge(scores, labels, plan)
-    kept = pf.where(merged, lambda df: df["score"] >= 20)
+    kept = pf.where(merged, _score_at_least_20)
     return pf.drop(kept, ["right_index"])
 
 
@@ -63,7 +74,7 @@ def deferred_pipeline(scores: pf.Dataset, labels: pf.Dataset) -> pf.Dataset:
     b = pf.bundle(scores=scores, labels=labels, plan=plan)
 
     merged = pf.merge(b.field("scores"), b.field("labels"), b.field("plan"), out="merged")
-    kept = pf.where(merged, lambda df: df["score"] >= 20, out="kept")
+    kept = pf.where(merged, _score_at_least_20, out="kept")
     trimmed = pf.drop(kept, ["right_index"], out="trimmed")
 
     # Nothing has executed yet: the carrier holds unmaterialized cells and the
@@ -79,7 +90,7 @@ def deferred_pipeline(scores: pf.Dataset, labels: pf.Dataset) -> pf.Dataset:
 def same_level_deferral() -> pf.Dataset:
     """Coupling-able ops defer *in place* — no bundle — and chain by handle.
 
-    ``bind_dimensions`` only adds a field plus a coupling (schema ``extend``,
+    ``compose_slice`` only adds a field plus a coupling (schema ``extend``,
     one row per row, per-row-independent), so its deferred form records the
     ``BindDimensions`` coupling directly on the dataset and returns a handle to
     the produced ``clip`` field. ``collect()`` runs the coupling.
@@ -98,7 +109,7 @@ def same_level_deferral() -> pf.Dataset:
     )
     ctx = ds.context()
 
-    clip = pf.bind_dimensions(
+    clip = pf.compose_slice(
         slice_field="clip",
         bindings={"t": (ctx.field("start"), ctx.field("stop"))},
     )
@@ -113,9 +124,9 @@ def main() -> None:
     scores, labels = _scores(), _labels()
 
     print("=== eager vs deferred: the same op, two operand types ===")
-    eager_one = pf.where(scores, lambda df: df["score"] >= 20)
+    eager_one = pf.where(scores, _score_at_least_20)
     deferred_one = pf.where(
-        pf.bundle(scores).field("cell_0"), lambda df: df["score"] >= 20, out="kept"
+        pf.bundle(scores).field("cell_0"), _score_at_least_20, out="kept"
     )
     print(f"  where(dataset)            -> {type(eager_one).__name__}")
     print(f"  where(handle, out='kept') -> {type(deferred_one).__name__}")
@@ -133,7 +144,7 @@ def main() -> None:
     pd.testing.assert_frame_equal(eager.table, deferred.table)
     print("\n  deferred chain collect() matches the eager pipeline\n")
 
-    print("=== same-level deferral: bind_dimensions records a coupling in place ===")
+    print("=== same-level deferral: compose_slice records a coupling in place ===")
     clipped = same_level_deferral()
     print("collected 'clip' slices:")
     for item_id in clipped.table.index:

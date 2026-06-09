@@ -69,26 +69,26 @@ def test_specs_are_frozen():
 
 
 def test_bind_slice_signature_drives_its_field_slots():
-    # bind_slice is the migration proof: its field-operand slots come from the
+    # slice_data is the migration proof: its field-operand slots come from the
     # signature, which the normalize-call machinery reads via _field_input_slots.
-    assert pf.bind_slice.signature is not None
-    assert pf.bind_slice.signature.field_slots() == ("slice_field", "data_field")
-    assert pf.bind_slice.instance()._field_input_slots() == ("slice_field", "data_field")
+    assert pf.slice_data.signature is not None
+    assert pf.slice_data.signature.field_slots() == ("slice_field", "data_field")
+    assert pf.slice_data.instance()._field_input_slots() == ("slice_field", "data_field")
     # The legacy tuple is superseded.
-    assert pf.bind_slice.field_handle_inputs == ()
+    assert pf.slice_data.field_handle_inputs == ()
 
 
 def test_metaclass_collects_field_inputs_from_class_attrs():
     # The operands are declared dataclass-style as class attributes; OperatorMeta
     # collects them (in definition order) into the built signature, the same way
     # it collects Parameter attributes.
-    assert isinstance(pf.bind_slice.slice_field, FieldInput)
-    assert pf.bind_slice.slice_field.field_type is DimensionedSliceField
-    assert isinstance(pf.bind_slice.data_field, FieldInput)
-    assert pf.bind_slice.data_field.field_type is DataField
+    assert isinstance(pf.slice_data.slice_field, FieldInput)
+    assert pf.slice_data.slice_field.field_type is DimensionedSliceField
+    assert isinstance(pf.slice_data.data_field, FieldInput)
+    assert pf.slice_data.data_field.field_type is DataField
 
-    assert tuple(pf.bind_slice.signature.inputs) == ("slice_field", "data_field")
-    assert isinstance(pf.bind_slice.signature.returns, FieldReturn)
+    assert tuple(pf.slice_data.signature.inputs) == ("slice_field", "data_field")
+    assert isinstance(pf.slice_data.signature.returns, FieldReturn)
 
 
 def test_metaclass_collects_field_outputs_for_lifting_ops():
@@ -107,5 +107,5 @@ def test_metaclass_collects_field_outputs_for_lifting_ops():
 
 def test_bind_slice_in_place_output_has_no_field_output_slot():
     # In-place ops keep a returns kind and declare no FieldOutput.
-    assert pf.bind_slice.signature.output_slots() == ()
-    assert isinstance(pf.bind_slice.signature.returns, FieldReturn)
+    assert pf.slice_data.signature.output_slots() == ()
+    assert isinstance(pf.slice_data.signature.returns, FieldReturn)

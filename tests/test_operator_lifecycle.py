@@ -250,9 +250,9 @@ def test_dataset_operator_normalize_call_resolves_field_handles_before_run():
     ctx = _dataset([1]).context()
     value = ctx.field("value")
 
-    bind_call = pf.bind_slice.instance().normalize_call(value, value)
+    bind_call = pf.slice_data.instance().normalize_call(value, value)
     consume_call = pf.consume.instance().normalize_call(value)
-    dimensions_call = pf.bind_dimensions.instance(dataset_context=ctx).normalize_call(
+    dimensions_call = pf.compose_slice.instance(dataset_context=ctx).normalize_call(
         slice_field="clip",
         bindings={"x": (value,)},
     )
@@ -270,7 +270,7 @@ def test_field_handles_outside_declared_field_inputs_are_rejected():
     value = ctx.field("value")
 
     with pytest.raises(TypeError, match="declared field-scoped parameters"):
-        pf.bind_slice.instance().normalize_call(value, unexpected=value)
+        pf.slice_data.instance().normalize_call(value, unexpected=value)
 
 
 def test_creation_operator_runs_through_normalized_lifecycle_without_advancing_context():
@@ -520,15 +520,15 @@ def test_field_handle_inputs_are_explicit_operator_convention():
     # The duality ops have migrated to OperatorSignatures; their field slots come
     # from the signature (the source the normalize-call machinery now reads), and
     # the legacy field_handle_inputs tuple is superseded (empty).
-    assert pf.bind_slice.signature.field_slots() == ("slice_field", "data_field")
-    assert pf.bind_slice.field_handle_inputs == ()
-    assert pf.bind_materialize.signature.field_slots() == ("field",)
-    assert pf.bind_materialize.field_handle_inputs == ()
-    # bind_dimensions resolves handles nested in `bindings`; `slice_field` is the
+    assert pf.slice_data.signature.field_slots() == ("slice_field", "data_field")
+    assert pf.slice_data.field_handle_inputs == ()
+    assert pf.materialize.signature.field_slots() == ("field",)
+    assert pf.materialize.field_handle_inputs == ()
+    # compose_slice resolves handles nested in `bindings`; `slice_field` is the
     # produced field (a FieldOutput), not a field-input slot.
-    assert pf.bind_dimensions.signature.field_slots() == ("bindings",)
-    assert pf.bind_dimensions.signature.output_slots() == ("slice_field",)
-    assert pf.bind_dimensions.field_handle_inputs == ()
+    assert pf.compose_slice.signature.field_slots() == ("bindings",)
+    assert pf.compose_slice.signature.output_slots() == ("slice_field",)
+    assert pf.compose_slice.field_handle_inputs == ()
     assert pf.consume.signature.field_slots() == ("target",)
     assert pf.consume.field_handle_inputs == ()
     # make_plan's `target` is a dataset-level handle (resolved via _resolve_target,

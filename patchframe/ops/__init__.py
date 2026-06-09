@@ -14,9 +14,9 @@ from patchframe.ops.base import (
 )
 from patchframe.ops.builtin.add_column import add_column
 from patchframe.ops.builtin.assign import assign
-from patchframe.ops.builtin.bind_dimensions import bind_dimensions
-from patchframe.ops.builtin.bind_materialize import bind_materialize
-from patchframe.ops.builtin.bind_slice import bind_slice
+from patchframe.ops.builtin.compose_slice import compose_slice
+from patchframe.ops.builtin.materialize import materialize
+from patchframe.ops.builtin.slice_data import slice_data
 from patchframe.ops.builtin.concat import concat, concat_columns, concat_rows
 from patchframe.ops.builtin.consume import consume
 from patchframe.ops.builtin.drop import drop
@@ -95,9 +95,9 @@ __all__ = [
     "TransitionPlan",
     "add_column",
     "assign",
-    "bind_dimensions",
-    "bind_materialize",
-    "bind_slice",
+    "compose_slice",
+    "materialize",
+    "slice_data",
     "bundle",
     "concat",
     "concat_columns",

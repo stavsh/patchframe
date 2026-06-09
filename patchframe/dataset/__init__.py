@@ -5,10 +5,12 @@ from patchframe.dataset.couplings import (
     ApplyOperator,
     BindDimensions,
     BindSlice,
+    CallSpec,
     Coupling,
     CouplingSet,
     FieldRef,
     Materialize,
+    UnpicklableCallWarning,
 )
 from patchframe.dataset.context import (
     DatasetContext,
@@ -61,6 +63,7 @@ __all__ = [
     "BindDimensions",
     "BindSlice",
     "BundleField",
+    "CallSpec",
     "ColumnCollisionStrategy",
     "CompositionContext",
     "Coupling",
@@ -84,6 +87,7 @@ __all__ = [
     "IndexIdentity",
     "Materialize",
     "Schema",
+    "UnpicklableCallWarning",
     "ValueField",
     "compose_column",
     "compose_key",

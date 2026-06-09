@@ -20,9 +20,9 @@ def test_coupling_able_drives_same_level_vs_bundle_routing():
     # The derived gate the interpreter reads to choose the lazy arm: coupling-able
     # (schema preserve/extend + one-to-one + per-row-independent) -> same-level;
     # otherwise -> BundleField carrier. No separate declaration.
-    assert pf.bind_materialize.instance().coupling_able() is True  # preserve
-    assert pf.bind_dimensions.instance().coupling_able() is True   # extend
-    assert pf.bind_slice.instance().coupling_able() is True        # preserve
+    assert pf.materialize.instance().coupling_able() is True  # preserve
+    assert pf.compose_slice.instance().coupling_able() is True   # extend
+    assert pf.slice_data.instance().coupling_able() is True        # preserve
     assert pf.where.instance().coupling_able() is False            # FILTER cardinality
     assert pf.merge.instance().coupling_able() is False            # compose + DEPENDENT
 
@@ -136,6 +136,12 @@ def _filter_dataset() -> pf.Dataset:
     )
 
 
+def _v_above_one(df: pd.DataFrame) -> "pd.Series":
+    # Module-level (not a lambda) so the deferred chain stays picklable — the
+    # UnpicklableCallWarning path itself is covered in test_call_spec.py.
+    return df["v"] > 1
+
+
 def test_where_lazy_arm_filters_per_fiber():
     # where is a per-row-independent lifting op; its lazy arm reuses
     # defer_in_level (one fiber cell + a predicate param), confirming the
@@ -143,11 +149,11 @@ def test_where_lazy_arm_filters_per_fiber():
     ds = _filter_dataset()
     b = pf.bundle(ds)  # cell_0 holds ds
 
-    filtered = pf.where(b.field("cell_0"), lambda df: df["v"] > 1, out="filtered")
+    filtered = pf.where(b.field("cell_0"), _v_above_one, out="filtered")
 
     assert isinstance(filtered, pf.FieldHandle)
     result = filtered.collect()
-    eager = pf.where(ds, lambda df: df["v"] > 1)
+    eager = pf.where(ds, _v_above_one)
     pd.testing.assert_frame_equal(result.table, eager.table)
 
 
@@ -167,7 +173,7 @@ def test_bind_materialize_same_level_lazy_arm_returns_a_handle_no_bundle():
     ds = _filter_dataset()
     ctx = ds.context()
 
-    handle = pf.bind_materialize(ctx.field("v"))
+    handle = pf.materialize(ctx.field("v"))
 
     assert isinstance(handle, pf.FieldHandle)
     assert handle.name == "v"
@@ -179,7 +185,7 @@ def test_bind_materialize_same_level_lazy_arm_returns_a_handle_no_bundle():
 def test_bind_materialize_eager_arm_is_unchanged():
     ds = _filter_dataset()
 
-    result = pf.bind_materialize(ds, "v")
+    result = pf.materialize(ds, "v")
 
     assert isinstance(result, pf.Dataset)
     assert any(isinstance(c, pf.Materialize) for c in result.couplings.couplings)
@@ -205,7 +211,7 @@ def test_bind_dimensions_same_level_lazy_arm_with_nested_handles():
     )
     ctx = ds.context()
 
-    handle = pf.bind_dimensions(
+    handle = pf.compose_slice(
         slice_field="clip",
         bindings={"x": (ctx.field("start"), ctx.field("stop"))},
     )

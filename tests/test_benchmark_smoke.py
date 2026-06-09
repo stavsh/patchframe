@@ -8,8 +8,8 @@ from patchframe.data.dimensioned_slice import DimensionedSlice
 from patchframe.data.dimensioned_slice_array import DimensionedSliceArray
 from patchframe.data.windows import AxisWindow
 from patchframe.dataset.field_composition import ColumnCollisionStrategy
-from patchframe.ops.builtin.bind_dimensions import bind_dimensions
-from patchframe.ops.builtin.bind_slice import bind_slice
+from patchframe.ops.builtin.compose_slice import compose_slice
+from patchframe.ops.builtin.slice_data import slice_data
 from patchframe.ops.builtin.concat import concat_columns, concat_rows
 from patchframe.ops.builtin.consume import consume
 from patchframe.ops.builtin.join import join
@@ -49,7 +49,7 @@ def test_consume_bind_dimensions_keeps_dimensioned_slice_array_columnar():
         string_cols=0,
         include_data=False,
     )
-    ds = bind_dimensions(ds, slice_field="slice", bindings=dimension_bindings())
+    ds = compose_slice(ds, slice_field="slice", bindings=dimension_bindings())
 
     result = consume(ds, "slice")
 
@@ -86,8 +86,8 @@ def test_consume_chained_bind_dimensions_keeps_dimensioned_slice_array_columnar(
         include_data=False,
     )
     bindings = dimension_bindings()
-    ds = bind_dimensions(ds, slice_field="slice", bindings={"time": bindings["time"]})
-    ds = bind_dimensions(
+    ds = compose_slice(ds, slice_field="slice", bindings={"time": bindings["time"]})
+    ds = compose_slice(
         ds,
         slice_field="slice",
         bindings={"x": bindings["x"], "y": bindings["y"]},
@@ -103,8 +103,8 @@ def test_consume_chained_bind_dimensions_keeps_dimensioned_slice_array_columnar(
 
 def test_consume_bind_slice_without_materialization_keeps_lazy_accessors():
     ds = make_multidim_dataset(1_000, value_cols=0, string_cols=0, include_data=True)
-    ds = bind_dimensions(ds, slice_field="slice", bindings=dimension_bindings())
-    ds = bind_slice(ds, slice_field="slice", data_field="data")
+    ds = compose_slice(ds, slice_field="slice", bindings=dimension_bindings())
+    ds = slice_data(ds, slice_field="slice", data_field="data")
     bind_slice_coupling = ds.couplings.couplings[-1]
 
     result = consume(ds, bind_slice_coupling)

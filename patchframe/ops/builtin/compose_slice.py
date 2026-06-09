@@ -1,4 +1,4 @@
-"""patchframe.ops.builtin.bind_dimensions"""
+"""patchframe.ops.builtin.compose_slice"""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from patchframe.ops.transitions import (
 )
 
 
-class bind_dimensions(DatasetOperator):
+class compose_slice(DatasetOperator):
     """Add a DimensionedSliceField column and a BindDimensions coupling in one call.
 
     Convenience wrapper around ``add_column`` + ``BindDimensions``. The new
@@ -28,7 +28,7 @@ class bind_dimensions(DatasetOperator):
     slice_field)`` (or row access) materialises the slices from the referenced
     DimensionField columns.
 
-    Calling ``bind_dimensions`` again on an already-existing ``DimensionedSliceField``
+    Calling ``compose_slice`` again on an already-existing ``DimensionedSliceField``
     with different bindings appends another ``BindDimensions`` to the chain — useful
     for building multi-dimensional slices one dimension at a time. An identical
     (slice_field, bindings) pair is a no-op.
@@ -46,11 +46,11 @@ class bind_dimensions(DatasetOperator):
 
     Usage
     -----
-    bind_dimensions(ds, slice_field="clip", bindings={"x": ("start", "end")})
-    bind_dimensions(ds, slice_field="clip", bindings=(("x0", "x1"), ("y0", "y1")))
+    compose_slice(ds, slice_field="clip", bindings={"x": ("start", "end")})
+    compose_slice(ds, slice_field="clip", bindings=(("x0", "x1"), ("y0", "y1")))
     # Chain for separate x and y passes:
-    ds = bind_dimensions(ds, slice_field="clip", bindings={"x": ("x0", "x1")})
-    ds = bind_dimensions(ds, slice_field="clip", bindings={"y": ("y0", "y1")})
+    ds = compose_slice(ds, slice_field="clip", bindings={"x": ("x0", "x1")})
+    ds = compose_slice(ds, slice_field="clip", bindings={"y": ("y0", "y1")})
     """
 
     transitions = TransitionPlan(schema=SchemaTransition.extend())
@@ -76,15 +76,15 @@ class bind_dimensions(DatasetOperator):
         for binding_refs in norm_bindings:
             for ref in binding_refs:
                 if not state.schema.has(ref.name):
-                    raise ValueError(f"bind_dimensions: binding field {ref.name!r} not in schema.")
+                    raise ValueError(f"compose_slice: binding field {ref.name!r} not in schema.")
                 if not isinstance(state.schema.get(ref.name), DimensionField):
-                    raise TypeError(f"bind_dimensions: field {ref.name!r} is not a DimensionField.")
+                    raise TypeError(f"compose_slice: field {ref.name!r} is not a DimensionField.")
 
         if state.schema.has(slice_field):
             existing = state.schema.get(slice_field)
             if not isinstance(existing, DimensionedSliceField):
                 raise TypeError(
-                    f"bind_dimensions: field {slice_field!r} already exists as "
+                    f"compose_slice: field {slice_field!r} already exists as "
                     f"{type(existing).__name__}, not DimensionedSliceField."
                 )
             return state.schema

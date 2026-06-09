@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 import patchframe as pf
 
 
@@ -32,10 +34,26 @@ def test_top_level_exports_user_facing_operators():
     assert pf.join
     assert pf.merge
     assert pf.explode
-    assert pf.bind_dimensions
-    assert pf.bind_slice
+    assert pf.compose_slice
+    assert pf.slice_data
     assert pf.window_expansion_plan
     assert pf.ContextEffect
     assert pf.OperatorCall
     assert pf.PlanOperator
     assert pf.register_aspect_handler
+
+
+@pytest.mark.parametrize(
+    "old_name, new_name",
+    [
+        ("bind_materialize", "materialize"),
+        ("bind_slice", "slice_data"),
+        ("bind_dimensions", "compose_slice"),
+    ],
+)
+def test_renamed_bind_operators_keep_deprecated_aliases(old_name, new_name):
+    # The bind_ prefix was dropped; the old names stay as deprecated aliases that
+    # warn and resolve to the renamed operator.
+    with pytest.warns(DeprecationWarning, match=old_name):
+        aliased = getattr(pf, old_name)
+    assert aliased is getattr(pf, new_name)

@@ -1,4 +1,4 @@
-"""patchframe.ops.builtin.bind_slice"""
+"""patchframe.ops.builtin.slice_data"""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from patchframe.ops.transitions import (
 )
 
 
-class bind_slice(DatasetOperator):
+class slice_data(DatasetOperator):
     """Add a BindSlice coupling between a DimensionedSliceField and a DataField.
 
     Per-row access (``ds[item_id]``) returns a sliced ``DataAccessor`` for the

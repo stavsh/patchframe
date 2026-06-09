@@ -80,7 +80,7 @@ def test_set_index_preserves_field_lineage_through_rewrite():
 def test_rename_rewrites_couplings_via_identity():
     # B3: identity-based derivation auto-rewrites coupling refs after rename;
     # no `resolve_transitions` mapping injection is required.
-    ds = pf.bind_materialize(_dataset(["a", "b"], values=[1, 2]), "value")
+    ds = pf.materialize(_dataset(["a", "b"], values=[1, 2]), "value")
     result = pf.rename(ds, {"value": "v"})
 
     coupling = result.couplings.couplings[0]

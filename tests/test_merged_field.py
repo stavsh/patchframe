@@ -23,8 +23,8 @@ def _ds(index_name: str, *cols: str) -> pf.Dataset:
 
 def test_concat_columns_collision_prunes_losing_input_couplings():
     # both inputs declare "tag"; each carries a distinct coupling referencing it
-    left = pf.bind_slice(_ds("left_id", "tag", "lval"), "tag", "lval")
-    right = pf.bind_slice(_ds("right_id", "tag", "rval"), "tag", "rval")
+    left = pf.slice_data(_ds("left_id", "tag", "lval"), "tag", "lval")
+    right = pf.slice_data(_ds("right_id", "tag", "rval"), "tag", "rval")
 
     # collision side defaults to "left": left's "tag" wins, right's loses
     result = pf.concat_columns(left, right, collision="keep")
@@ -40,8 +40,8 @@ def test_concat_columns_collision_prunes_losing_input_couplings():
 
 
 def test_concat_columns_without_collision_unions_couplings():
-    left = pf.bind_slice(_ds("left_id", "sa", "da"), "sa", "da")
-    right = pf.bind_slice(_ds("right_id", "sb", "db"), "sb", "db")
+    left = pf.slice_data(_ds("left_id", "sa", "da"), "sa", "da")
+    right = pf.slice_data(_ds("right_id", "sb", "db"), "sb", "db")
 
     # no shared field names — no collision, both couplings survive
     result = pf.concat_columns(left, right)
@@ -50,8 +50,8 @@ def test_concat_columns_without_collision_unions_couplings():
 
 
 def test_merge_collision_prunes_losing_input_couplings():
-    left = pf.bind_slice(_ds("item_id", "tag", "lval"), "tag", "lval")
-    right = pf.bind_slice(_ds("item_id", "tag", "rval"), "tag", "rval")
+    left = pf.slice_data(_ds("item_id", "tag", "lval"), "tag", "lval")
+    right = pf.slice_data(_ds("item_id", "tag", "rval"), "tag", "rval")
     plan = pf.join(left, right)
 
     # "tag" collides; collision side defaults left, so right's "tag" loses

@@ -444,8 +444,8 @@ class TestFieldHandleDispatch:
         clip = ctx.field("clip")
         data = ctx.field("data")
 
-        pf.bind_slice(clip, data)
-        pf.bind_materialize(data)
+        pf.slice_data(clip, data)
+        pf.materialize(data)
         result = consume(data)
 
         assert ctx.dataset is result
@@ -457,8 +457,8 @@ class TestFieldHandleDispatch:
 
     def test_ambient_string_dispatch_builds_and_consumes_couplings(self):
         with self._dataset().context() as ctx:
-            pf.bind_slice("clip", "data")
-            pf.bind_materialize("data")
+            pf.slice_data("clip", "data")
+            pf.materialize("data")
             result = consume("data")
 
         assert ctx.dataset is result
@@ -471,7 +471,7 @@ class TestFieldHandleDispatch:
         ds = add_column(ds, DimensionField(name="stop", dimension=dim), [30])
         ctx = ds.context()
 
-        pf.bind_dimensions.instance(dataset_context=ctx)(
+        pf.compose_slice.instance(dataset_context=ctx)(
             slice_field="clip",
             bindings={"x": (ctx.field("start"), ctx.field("stop"))},
         )
@@ -484,31 +484,42 @@ class TestFieldHandleDispatch:
         right = self._dataset().context()
 
         with pytest.raises(ValueError, match="must share one DatasetContext"):
-            pf.bind_slice(left.field("clip"), right.field("data"))
+            pf.slice_data(left.field("clip"), right.field("data"))
 
     def test_interpreter_gives_bind_slice_a_lazy_arm(self):
-        # bind_slice never had a hand-written __call__ branch: its lazy arm comes
+        # slice_data never had a hand-written __call__ branch: its lazy arm comes
         # purely from the signature interpreter (two FieldInput operands, the
         # output one marked, + FieldReturn). The strongest proof the interpreter
         # generalizes past the four migrated branches.
         ctx = self._dataset().context()
 
-        handle = pf.bind_slice(ctx.field("clip"), ctx.field("data"))
+        handle = pf.slice_data(ctx.field("clip"), ctx.field("data"))
 
         assert isinstance(handle, pf.FieldHandle)
         assert handle.name == "data"  # data_field is the in-place output
         assert any(isinstance(c, BindSlice) for c in ctx.dataset.couplings.couplings)
-        # The returned handle chains into another lazy op: bind_slice -> handle
-        # -> bind_materialize -> handle -> collect materializes the sliced array.
-        result = pf.bind_materialize(handle).collect()
+        # The returned handle chains into another lazy op: slice_data -> handle
+        # -> materialize -> handle -> collect materializes the sliced array.
+        result = pf.materialize(handle).collect()
         assert result.table["data"].iloc[0].shape == (20,)
+
+    def test_materialize_handle_items_materializes_arrays_per_row(self):
+        # The per-row scan idiom: materialize(handle) records the coupling, and
+        # .items() drives coupling-aware row access, yielding one materialized
+        # array at a time — no DataAccessor / source-manager internals.
+        ds = self._dataset()
+
+        arrays = dict(pf.materialize(ds.field("data")).items())
+
+        assert list(arrays) == ["a"]
+        assert arrays["a"].shape == (100,)
 
     def test_handle_with_explicit_stale_dataset_snapshot_is_rejected(self):
         initial = self._dataset()
         ctx = initial.context()
         clip = ctx.field("clip")
         data = ctx.field("data")
-        pf.bind_slice(clip, data)
+        pf.slice_data(clip, data)
 
         with pytest.raises(ValueError, match="current dataset snapshot"):
-            pf.bind_materialize(initial, data)
+            pf.materialize(initial, data)

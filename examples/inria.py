@@ -352,12 +352,13 @@ def make_inria_mask_bbox_plan(
     source_indexes = []
     bboxes = []
     component_pixels = []
-    for source_index, accessor in images.table[mask_field].items():
-        if not isinstance(accessor, pf.DataAccessor):
-            raise TypeError(f"Inria mask field {mask_field!r} must contain DataAccessor values.")
-        mask = np.asarray(accessor.materialize(images.source_manager), dtype=bool)
+    # Materialize the mask column through the framework and iterate it per row:
+    # materialize(handle) records the coupling, and .items() drives coupling-aware
+    # row access, loading one mask at a time (no DataAccessor / source-manager
+    # internals, and no all-masks-in-memory bulk load).
+    for source_index, mask in pf.materialize(images.field(mask_field)).items():
         for bbox, pixels in _component_bboxes(
-            mask,
+            np.asarray(mask, dtype=bool),
             min_component_pixels=min_component_pixels,
             connectivity=connectivity,
         ):
@@ -470,9 +471,9 @@ def bind_inria_patches(
     )
     patches = pf.explode(images, patch_plan)
     for data_field in data_fields:
-        patches = pf.bind_slice(patches, slice_field=patch_field, data_field=data_field)
+        patches = pf.slice_data(patches, slice_field=patch_field, data_field=data_field)
     if materialize_patches:
-        patches = pf.bind_materialize(patches, data_fields)
+        patches = pf.materialize(patches, data_fields)
     return patches
 
 

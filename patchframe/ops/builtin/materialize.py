@@ -1,4 +1,4 @@
-"""patchframe.ops.builtin.bind_materialize"""
+"""patchframe.ops.builtin.materialize"""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from patchframe.ops.transitions import (
 )
 
 
-class bind_materialize(DatasetOperator):
+class materialize(DatasetOperator):
     """Attach Materialize couplings to one or more data fields.
 
     Coupling-able (schema/table preserve, one-to-one, per-row-independent), so

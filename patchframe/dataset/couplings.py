@@ -18,6 +18,8 @@ per-subclass boilerplate.
 
 from __future__ import annotations
 
+import pickle
+import warnings
 from collections.abc import Mapping
 from dataclasses import dataclass, field, fields, replace
 from typing import TYPE_CHECKING, Any
@@ -363,6 +365,75 @@ class Materialize(Coupling):
         return row
 
 
+class UnpicklableCallWarning(UserWarning):
+    """A deferred operator call carries an argument (or operator) that cannot pickle.
+
+    Raised when a deferred call is recorded (e.g. by ``defer_in_level``), so the
+    problem surfaces *there* rather than later at ``collect``/save/worker dispatch.
+    The call still replays in-process; escalate this category to an error
+    (``warnings.filterwarnings("error", category=UnpicklableCallWarning)``) to
+    enforce serializable couplings.
+    """
+
+
+@dataclass(frozen=True, slots=True)
+class CallSpec:
+    """The serializable core of a (deferred) operator call — enough to replay it.
+
+    Captures the operator (class or configured instance, pickled by import
+    reference) plus its normalized positional ``args``, keyword ``kwargs``, and
+    dispatch ``variant``. This is the pickle-friendly half of an ``OperatorCall``
+    (design-constraints §7); the live ``OperatorCall`` keeps the runtime
+    datasets/states/contexts/effects, which are never serialized. Pickle-friendly
+    *modulo the argument values themselves*: a ``where`` lambda predicate or a
+    script-local operator class will not pickle — see ``picklability_error``.
+    """
+
+    operator: Any
+    args: tuple[Any, ...] = ()
+    kwargs: Mapping[str, Any] = field(default_factory=dict)
+    variant: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "args", tuple(self.args))
+        object.__setattr__(self, "kwargs", dict(self.kwargs))
+
+    @property
+    def operator_name(self) -> str:
+        return getattr(self.operator, "__name__", None) or type(self.operator).__name__
+
+    def replay(self, *prepend_args: Any) -> Any:
+        """Re-invoke the operator: ``prepend_args`` (e.g. bundle cells), then the spec."""
+
+        return self.operator(*prepend_args, *self.args, **self.kwargs)
+
+    def picklability_error(self) -> Exception | None:
+        """Return the exception this spec would raise on pickle, or ``None`` if it pickles."""
+
+        try:
+            pickle.dumps(self)
+        except Exception as err:  # noqa: BLE001 — any pickling failure is the answer
+            return err
+        return None
+
+
+def warn_if_unpicklable(call: CallSpec, *, stacklevel: int = 2) -> None:
+    """Emit an ``UnpicklableCallWarning`` if ``call`` cannot pickle (early check)."""
+
+    error = call.picklability_error()
+    if error is None:
+        return
+    warnings.warn(
+        f"Deferred operator {call.operator_name!r} cannot be pickled "
+        f"({type(error).__name__}: {error}). It replays in-process at collect(), "
+        "but the dataset cannot be persisted or sent to a worker while this "
+        "coupling is present. Pass picklable arguments (a module-level function, "
+        "not a lambda); filter this category to an error to require it.",
+        UnpicklableCallWarning,
+        stacklevel=stacklevel + 1,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class ApplyOperator(Coupling):
     """Deferred operator application over ``BundleField`` cells.
@@ -375,22 +446,31 @@ class ApplyOperator(Coupling):
     row" (cardinality-preserving, field-filling), so it satisfies the coupling
     contract; the cell encapsulates the operator's internal cardinality change.
 
-    The coupling stores the operator (a class or configured instance, called
-    eagerly) plus the call-time keyword ``params``. Because the cells are plain
-    ``Dataset``s, ``compute`` always hits the operator's eager arm — no
-    re-deferral. ``consume`` (the terminal) runs this coupling; the bundle's
-    ``collect`` step then extracts the filled output cell.
+    The deferred call lives in a serializable ``CallSpec`` (``call``). Because the
+    cells are plain ``Dataset``s, ``compute`` always hits the operator's eager arm
+    via ``CallSpec.replay`` — no re-deferral. ``consume`` (the terminal) runs this
+    coupling; the bundle's ``collect`` step then extracts the filled output cell.
     """
 
     inputs: tuple[FieldRef, ...]
     output: FieldRef
-    operator: Any
-    params: Mapping[str, Any] = field(default_factory=dict)
+    call: CallSpec
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "inputs", _coerce_field_ref_tuple(self.inputs))
         object.__setattr__(self, "output", _coerce_field_ref(self.output))
-        object.__setattr__(self, "params", dict(self.params))
+
+    @property
+    def operator(self) -> Any:
+        """The deferred operator (read view onto ``call``)."""
+
+        return self.call.operator
+
+    @property
+    def params(self) -> Mapping[str, Any]:
+        """The deferred call's keyword params (read view onto ``call``)."""
+
+        return self.call.kwargs
 
     def input_fields(self) -> tuple[str, ...]:
         return tuple(ref.name for ref in self.inputs)
@@ -399,7 +479,7 @@ class ApplyOperator(Coupling):
         return self.output.name
 
     def _apply_operator(self, cells: list[Any]) -> Any:
-        return self.operator(*cells, **dict(self.params))
+        return self.call.replay(*cells)
 
     def compute(self, state: DatasetState) -> pd.Series:
         out = pd.Series(index=state.table.index, dtype=object)

@@ -61,7 +61,7 @@ violating it is explicit.
   fiber-locality for future Bundle lifts. Names should stay generic, not
   `chunk_local`, so the declaration serves both stages.
 - **Flag-dependent contracts must be representable.** Some operators
-  (`add_column`, `bind_dimensions`, `consume`, `concat_columns`, future
+  (`add_column`, `compose_slice`, `consume`, `concat_columns`, future
   `assign_at`, future `explode(keep_source_index=True)`) have contracts that
   depend on inputs or flags. Class-level static declarations must remain
   conservative; a resolved-transition hook can refine after parameters are
@@ -183,6 +183,15 @@ direction:
   costly to find later.
 - **Live runtime state stays out of serialized state.** File handles,
   caches, locks, GPU handles, `SourceManager` references, threadpools.
+- **Deferred operator calls fail loud at defer time, not at collect/save.**
+  A deferred op is recorded as an `ApplyOperator` carrying a `CallSpec`
+  (operator-as-class + normalized `args`/`kwargs` + `variant`), referencing its
+  cells by name so it pickles independently of the cell datasets. When an arg is
+  unpicklable (a `lambda` predicate), `warn_if_unpicklable` raises
+  `UnpicklableCallWarning` *when the coupling is recorded* — so the precondition
+  above is checked early rather than surfacing on `.collect()`/persistence. The
+  warning is filterable to an error to require persistable deferred chains.
+  Covered by `tests/test_call_spec.py`.
 - **Dask is an explicit, extension-owned execution layer.** Core operators
   must not hide Dask execution behind normal in-memory calls. The preferred
   shape is `patchframe_dask.map_field(...)` returning a Dask collection that

@@ -26,7 +26,7 @@ import pandas as pd
 
 from patchframe.data.manager import SourceManager, get_default_manager
 from patchframe.data.source import DataSource
-from patchframe.dataset.couplings import Coupling, CouplingSet
+from patchframe.dataset.couplings import CallSpec, Coupling, CouplingSet
 from patchframe.dataset.dataset import Dataset
 from patchframe.dataset.fields import ForeignIndexField, IndexField
 from patchframe.dataset.identity import (
@@ -128,6 +128,29 @@ class OperatorCall:
         object.__setattr__(self, "states", states)
         object.__setattr__(self, "reference_contexts", reference_contexts)
         object.__setattr__(self, "context_effects", context_effects)
+
+    def spec(self) -> CallSpec:
+        """Return the serializable core of this call (the runtime↔persisted bridge).
+
+        Keeps the operator + normalized ``args``/``kwargs`` + ``variant``; drops the
+        process-local runtime fields (``datasets``/``states``/``reference_contexts``/
+        ``context_effects``), which are never persisted (design-constraints §7).
+
+        The operator is normalized to its *class* — the same canonical reference
+        the bundle-defer path records (``defer_in_level(type(self), ...)``).
+        Operators are code: the class pickles by reference (stable identity,
+        compact), while dual-arm bound params are infra-only (``dataset_context``)
+        and behavioral per-call data lives in ``kwargs``.
+        """
+
+        operator = self.operator
+        operator_ref = operator if isinstance(operator, type) else type(operator)
+        return CallSpec(
+            operator=operator_ref,
+            args=self.args,
+            kwargs=dict(self.kwargs),
+            variant=self.variant,
+        )
 
 
 class OperatorMeta(ABCMeta):

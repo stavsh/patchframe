@@ -428,9 +428,9 @@ The full set of built-in operators under the new ontology:
 | `drop` / `keep` | `narrow` | `mutate` | `derive` | `derive` | `derive` | `preserve` |
 | `add_column` | `extend` | `mutate` | `derive` (+`new_couplings`) | `derive` | `derive` | `preserve` |
 | `set_index` | `rewrite` | `mutate` | `derive` | `derive` | **`mint`** | `preserve` |
-| `bind_dimensions` | `extend` | `mutate` | `derive` (+`new_couplings`) | `derive` | `derive` | `preserve` |
-| `bind_slice` | `preserve` | `preserve` | `derive` (+`new_couplings`) | `derive` | `derive` | `preserve` |
-| `bind_materialize` | `preserve` | `preserve` | `derive` (+`new_couplings`) | `derive` | `derive` | `preserve` |
+| `compose_slice` | `extend` | `mutate` | `derive` (+`new_couplings`) | `derive` | `derive` | `preserve` |
+| `slice_data` | `preserve` | `preserve` | `derive` (+`new_couplings`) | `derive` | `derive` | `preserve` |
+| `materialize` | `preserve` | `preserve` | `derive` (+`new_couplings`) | `derive` | `derive` | `preserve` |
 | `consume` | `preserve` | `mutate` | `derive` | `derive` | `derive` | `preserve` |
 | `concat_rows` | `compose` | `construct` | **`homogeneous`** | `derive` | `derive` | `expand` |
 | `concat_columns` | `compose` | `construct` | `derive` | `derive` | `derive` | `preserve` |

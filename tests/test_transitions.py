@@ -149,9 +149,9 @@ def test_operator_per_row_independence_declarations():
         pf.keep,
         pf.add_column,
         pf.assign,
-        pf.bind_slice,
-        pf.bind_materialize,
-        pf.bind_dimensions,
+        pf.slice_data,
+        pf.materialize,
+        pf.compose_slice,
         pf.explode,
         pf.concat_rows,
         pf.window_expansion_plan,
@@ -178,7 +178,7 @@ def test_operator_transition_declarations():
     assert pf.keep.transitions.schema.mode == "narrow"
     assert pf.rename.transitions.schema.mode == "rewrite"
     assert pf.add_column.transitions.schema.mode == "extend"
-    assert pf.bind_dimensions.transitions.schema.mode == "extend"
+    assert pf.compose_slice.transitions.schema.mode == "extend"
     assert pf.set_index.transitions.index_identity.mode == "mint"
     assert pf.join.transitions.couplings.mode == "clear"
     assert pf.join.transitions.sources.mode == "compose"

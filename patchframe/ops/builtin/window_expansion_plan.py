@@ -43,7 +43,7 @@ class window_expansion_plan(PlanOperator):
     - ``field``: a single ``DimensionedSliceField`` column. Null rows are
       skipped.
     - ``bindings``: one or more ``DimensionField`` bindings in the same format
-      accepted by ``bind_dimensions``. Null values are rejected because partial
+      accepted by ``compose_slice``. Null values are rejected because partial
       multi-column bounds are ambiguous.
     """
 

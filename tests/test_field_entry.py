@@ -49,7 +49,7 @@ def test_repeated_field_calls_share_one_context():
 def test_field_handles_feed_a_multi_field_operator():
     ds = _dataset()
 
-    call = pf.bind_slice.instance().normalize_call(ds.field("value"), ds.field("value2"))
+    call = pf.slice_data.instance().normalize_call(ds.field("value"), ds.field("value2"))
 
     assert call.args == ("value", "value2")
     assert call.datasets == (ds,)
@@ -108,3 +108,12 @@ def test_selection_resolves_through_field_selector_helper():
     resolved = resolve_field_selectors(selection, ds.schema, op_name="test")
 
     assert resolved == ("value", "value2")
+
+
+def test_field_handle_items_and_iter_yield_per_row_values():
+    # items() -> (item_id, value) via coupling-aware row access; __iter__ -> values.
+    ds = _dataset()
+    handle = ds.field("value")
+
+    assert [(item_id, int(v)) for item_id, v in handle.items()] == [(0, 1), (1, 2)]
+    assert [int(v) for v in handle] == [1, 2]

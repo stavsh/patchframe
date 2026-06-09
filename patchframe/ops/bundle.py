@@ -30,7 +30,12 @@ from typing import Any
 
 import pandas as pd
 
-from patchframe.dataset.couplings import ApplyOperator, CouplingSet
+from patchframe.dataset.couplings import (
+    ApplyOperator,
+    CallSpec,
+    CouplingSet,
+    warn_if_unpicklable,
+)
 from patchframe.dataset.dataset import Dataset
 from patchframe.dataset.fields import BundleField, IndexField
 from patchframe.dataset.schema import Schema
@@ -214,12 +219,9 @@ def build_apply_bundle(
         raise ValueError(f"build_apply_bundle: output {output!r} collides with an input name.")
 
     schema, table = _carrier_state(dict(inputs), output=output)
-    coupling = ApplyOperator(
-        inputs=tuple(inputs.keys()),
-        output=output,
-        operator=operator,
-        params=dict(params or {}),
-    )
+    call = CallSpec(operator=operator, kwargs=dict(params or {}))
+    warn_if_unpicklable(call)
+    coupling = ApplyOperator(inputs=tuple(inputs.keys()), output=output, call=call)
     return Dataset(
         state=DatasetState(schema=schema, table=table, couplings=CouplingSet((coupling,)))
     )
@@ -272,9 +274,9 @@ def defer_in_level(
     if out in carrier.schema.names():
         raise ValueError(f"defer_in_level: output {out!r} already exists on the carrier.")
 
-    coupling = ApplyOperator(
-        inputs=input_cols, output=out, operator=operator, params=dict(params or {})
-    )
+    call = CallSpec(operator=operator, kwargs=dict(params or {}))
+    warn_if_unpicklable(call)
+    coupling = ApplyOperator(inputs=input_cols, output=out, call=call)
     new_table = carrier.table.copy()
     new_table[out] = pd.Series([pd.NA] * len(carrier), index=carrier.table.index, dtype=object)
     new_carrier = carrier.replace_state(
