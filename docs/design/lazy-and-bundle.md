@@ -213,7 +213,10 @@ A complete set, every operation paired with an inverse or adjoint:
 by=k))` returns `ds`'s row identity (modulo order). `partition` is
 deterministic, the base gets a fresh key-namespace identity, the fibers keep
 `ds`'s identity, and `ForeignIndexField` (directionally neutral) links
-base → fiber.
+base → fiber. (Amended 2026-06-10: when `by=` is a `ForeignIndexField`, the
+base *inherits* the referenced identity instead of minting — the identity-scope
+arm, with `domain=` totality; fresh mint is the plain-value/categorical arm.
+See `partition-aggregate.md` §4.)
 
 ## 4. Operator capabilities and the three-way routing
 
@@ -396,6 +399,9 @@ special cases. `handle.consume()` runs the couplings whose end node is that fiel
 giving targeted/partial materialization for free. It returns a `Dataset` — the
 deliberate exception to "the lazy arm returns handles," because it is the *exit*
 — and should be idempotent on an already-materialized field rather than raise.
+(Resolved 2026-06-11: consume is *literal* — it discharges the couplings it
+runs, so the idempotence is structural; row access *evaluates* pending work
+ephemerally and discharges nothing. See `lazy-duality-plan.md`.)
 
 ## 7. Staged commitment and scope discipline
 

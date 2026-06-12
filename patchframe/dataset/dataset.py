@@ -12,6 +12,7 @@ a fresh ``Dataset`` with no cached engine.
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
@@ -23,6 +24,7 @@ import patchframe.dataset.extension  # noqa: F401 — registers finfo on pd.Seri
 from patchframe.data.manager import SourceManager
 from patchframe.dataset.coupling_engine import CouplingEngine
 from patchframe.dataset.extension import _FIELD
+from patchframe.dataset.fields import exit_value
 from patchframe.dataset.state import DatasetState
 
 if TYPE_CHECKING:
@@ -121,11 +123,22 @@ class Dataset:
         return self._context
 
     def __getitem__(self, key: Any) -> pd.Series | dict[str, Any]:
-        """Column access or coupling-aware row access.
+        """Column access (storage) or row access (evaluate + exit).
 
-        - ``ds["col"]``     — returns a Series with field info in ``.attrs``.
-        - ``ds[item_id]``   — returns a coupling-aware row dict; couplings are
-                              applied in topo-sorted order via CouplingEngine.
+        - ``ds["col"]``     — the storage surface: returns the stored Series
+                              (field info in ``.attrs``); pending couplings are
+                              not run, and framework objects (fiber
+                              ``Dataset``s, accessors) stay as they are — this
+                              is where lazy navigation lives.
+        - ``ds[item_id]``   — the exit point from the dataset world: the row's
+                              pending couplings are *evaluated* in topo-sorted
+                              order — ephemerally: nothing is persisted or
+                              discharged (evaluation, not consumption) — and
+                              every value then exits to plain Python through
+                              its field's conversion (``Field.exit_value`` /
+                              ``register_field_exit``): a ``BundleField``
+                              fiber leaves as a list of records. Re-access
+                              evaluates again.
         """
         if isinstance(key, str) and key in self.table.columns:
             series = self.table[key]
@@ -136,6 +149,13 @@ class Dataset:
             return series
 
         if isinstance(key, (int, np.integer)) and key not in self.table.index:
+            warnings.warn(
+                "Dataset[int] positional fallback is deprecated: with integer "
+                "row labels it silently changes meaning. Use Dataset.rows()[i] "
+                "for positional access.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
             row = self.table.iloc[int(key)]
         else:
             row = self.table.loc[key]
@@ -148,14 +168,112 @@ class Dataset:
                 result[field_def.name] = row.name
 
         if self.couplings.couplings:
+            # Couplings evaluate over raw values (a fuse fn receives the fiber
+            # Dataset, not its exported form); the exit pass runs after.
             result = self.coupling_engine().apply_row(result, self.state)
 
-        return result
+        return {
+            name: exit_value(self.schema.get(name), value)
+            if self.schema.has(name)
+            else value
+            for name, value in result.items()
+        }
+
+    def rows(self, field: str | Iterable[str] | None = None) -> RowSequence:
+        """Positional view over evaluated, exited rows — DataLoader-pluggable.
+
+        ``ds.rows()`` is a duck-typed map-style dataset (``__len__`` +
+        ``__getitem__(int)`` + batched ``__getitems__``), so
+        ``DataLoader(ds.rows(), ...)`` works directly, with no torch dependency
+        in patchframe. Positional semantics is carried by the view's *type* —
+        label-based row access stays on ``ds[item_id]``. ``field`` selects the
+        per-item payload: ``None`` → the full exited row dict; a name → that
+        field's exited value; several names → a sub-dict.
+        """
+
+        if field is None or isinstance(field, str):
+            selected: str | tuple[str, ...] | None = field
+        else:
+            selected = tuple(field)
+        names = (selected,) if isinstance(selected, str) else (selected or ())
+        for name in names:
+            if not self.schema.has(name):
+                raise ValueError(f"rows: field {name!r} is not in the schema.")
+        return RowSequence(dataset=self, field=selected)
 
     def replace_state(self, **kwargs) -> Dataset:
         """Return a new dataset with parts of the state replaced."""
         return Dataset(state=replace(self.state, **kwargs), source_manager=self.source_manager)
 
+    def assign(self, **columns: Any) -> Dataset:
+        """Pandas-style functional assignment: return a new dataset with columns set.
+
+        Sugar over the ``assign`` operator — bare values infer a ``ValueField``;
+        pass ``(field_def, values)`` for a typed field — matching pandas'
+        ``df.assign`` convention (returns new, never mutates). The mutating
+        conventions (``x[col] = values``, ``x.loc[ids] = values``) live on the
+        authoring session types (``DatasetContext``, ``FieldHandle``), because
+        ``Dataset`` itself is immutable.
+        """
+
+        from patchframe.ops.builtin.assign import assign as assign_op
+
+        return assign_op(self, **columns)
+
     def close(self) -> None:
         """Release runtime resources associated with this dataset."""
         return None
+
+
+class RowSequence:
+    """Positional view over a dataset's evaluated, exited rows.
+
+    The DataLoader face of a dataset (returned by :meth:`Dataset.rows`): a
+    duck-typed map-style dataset — ``len(view)`` and ``view[i]`` (linear
+    position → evaluated, exited row) are all a torch ``DataLoader`` needs.
+    ``__getitems__`` implements the batched-fetch protocol: the batch's rows
+    are taken into a transient dataset whose pending couplings are consumed
+    once in bulk, then exited per row — amortizing evaluation across the
+    batch without touching the source dataset (its couplings stay pending).
+    """
+
+    __slots__ = ("dataset", "field")
+
+    def __init__(
+        self,
+        dataset: Dataset,
+        field: str | tuple[str, ...] | None = None,
+    ) -> None:
+        self.dataset = dataset
+        self.field = field
+
+    def __len__(self) -> int:
+        return len(self.dataset.table)
+
+    def __getitem__(self, position: int) -> Any:
+        # Out-of-range raises IndexError, which also terminates the legacy
+        # iteration protocol, so list(view) / for-loops work.
+        label = self.dataset.table.index[int(position)]
+        return self._select(self.dataset[label])
+
+    def __getitems__(self, positions: Iterable[int]) -> list[Any]:
+        index = self.dataset.table.index
+        labels = [index[int(position)] for position in positions]
+        # Samplers may draw with replacement; the transient needs unique rows.
+        unique = list(dict.fromkeys(labels))
+        transient = self.dataset.replace_state(table=self.dataset.table.loc[unique])
+        outputs = {c.output_field() for c in transient.couplings.couplings}
+        if outputs:
+            from patchframe.ops.builtin.consume import consume
+
+            for output in outputs:
+                transient = consume(transient, output)
+        by_label = {label: self._select(transient[label]) for label in unique}
+        return [by_label[label] for label in labels]
+
+    def _select(self, row: dict[str, Any]) -> Any:
+        if self.field is None:
+            return row
+        if isinstance(self.field, str):
+            return row[self.field]
+        return {name: row[name] for name in self.field}

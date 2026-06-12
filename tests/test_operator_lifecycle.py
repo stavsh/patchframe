@@ -535,10 +535,14 @@ def test_field_handle_inputs_are_explicit_operator_convention():
     # must be an IndexField) rather than a field reference, so it keeps the legacy
     # field_handle_inputs permission seam.
     assert pf.make_plan.field_handle_inputs == ("target",)
-    # window_expansion_plan is a source-dataset plan op: its source is a
-    # DatasetInput and field/bindings are field-input slots, all from the
-    # signature (the legacy tuple is superseded).
-    assert pf.window_expansion_plan.signature.field_slots() == ("field", "bindings")
+    # window_expansion_plan is a source-dataset plan op with a bundle-lift lazy
+    # arm: its source is a DatasetInput, and field/bindings are ParamInput —
+    # replay data resolved against the (possibly deferred) source at run time,
+    # never handle operands (the operand-dispatch ruling, 2026-06-11: handles
+    # always select the lazy arm; eager handle resolution was removed).
+    assert pf.window_expansion_plan.signature.field_slots() == ()
+    assert pf.window_expansion_plan.signature.param_slots() == ("field", "bindings")
     assert pf.window_expansion_plan.signature.dataset_slots() == ("dataset",)
+    assert pf.window_expansion_plan.signature.output_slots() == ("out",)
     assert pf.window_expansion_plan.field_handle_inputs == ()
     assert pf.concat.field_handle_inputs == ()

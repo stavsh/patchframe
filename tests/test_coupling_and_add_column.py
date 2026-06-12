@@ -422,11 +422,15 @@ class TestConsume:
         with pytest.raises(ValueError, match="No couplings produce"):
             consume(ds, "nonexistent")
 
-    def test_consume_preserves_schema_and_couplings(self):
+    def test_consume_preserves_schema_and_discharges_couplings(self):
         ds = self._make_sliced_dataset()
         ds2 = consume(ds, "data")
         assert ds2.schema is ds.schema or ds2.schema.names() == ds.schema.names()
-        assert len(ds2.couplings.couplings) == len(ds.couplings.couplings)
+        # Consume is literal: completed couplings are removed from the output;
+        # the input snapshot keeps its pending work (discharge travels with
+        # the output state).
+        assert len(ds2.couplings.couplings) == 0
+        assert len(ds.couplings.couplings) > 0
 
 
 # ---------------------------------------------------------------------------
@@ -446,14 +450,19 @@ class TestFieldHandleDispatch:
 
         pf.slice_data(clip, data)
         pf.materialize(data)
+
+        # The recorded (pending) couplings reference fields by FieldRef.
+        bind, materialize = ctx.dataset.couplings.couplings
+        assert type(bind.slice_field) is FieldRef
+        assert type(bind.data_field) is FieldRef
+        assert type(materialize.field) is FieldRef
+
         result = consume(data)
 
         assert ctx.dataset is result
         assert result.table["data"].iloc[0].shape == (20,)
-        bind, materialize = result.couplings.couplings
-        assert type(bind.slice_field) is FieldRef
-        assert type(bind.data_field) is FieldRef
-        assert type(materialize.field) is FieldRef
+        # Consume is literal: the run couplings are discharged.
+        assert len(result.couplings.couplings) == 0
 
     def test_ambient_string_dispatch_builds_and_consumes_couplings(self):
         with self._dataset().context() as ctx:

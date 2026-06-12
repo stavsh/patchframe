@@ -17,9 +17,12 @@ from patchframe.ops.builtin.join import (
     join,
 )
 from patchframe.ops.builtin.keep import keep
+from patchframe.ops.builtin.link import link
+from patchframe.ops.builtin.map_fields import map_fields
 from patchframe.ops.builtin.make_from_dataframe import make_from_dataframe
 from patchframe.ops.builtin.make_plan import make_plan
 from patchframe.ops.builtin.merge import merge
+from patchframe.ops.builtin.partition import partition
 from patchframe.ops.builtin.rename import rename
 from patchframe.ops.builtin.set_index import set_index
 from patchframe.ops.builtin.where import where
@@ -43,9 +46,11 @@ __all__ = [
     "explode",
     "join",
     "keep",
+    "link",
     "make_from_dataframe",
     "make_plan",
     "merge",
+    "partition",
     "rename",
     "set_index",
     "where",

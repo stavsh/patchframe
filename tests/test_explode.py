@@ -154,15 +154,64 @@ def test_explode_rejects_null_source_labels():
         pf.explode(source, plan)
 
 
-def test_explode_rejects_plan_without_overlay_fields():
+def test_explode_without_shared_fields_is_a_pure_gather():
+    source = _source()
+    plan = _plan(
+        source,
+        pd.DataFrame(
+            {"source_index": ["a", "b", "a"]},
+            index=pd.RangeIndex(3, name="plan_id"),
+        ),
+    )
+
+    result = pf.explode(source, plan)
+
+    assert result.schema.names() == ("plan_id", "value", "label")
+    assert result.table["value"].tolist() == [1, 2, 1]
+
+
+def test_explode_rejects_explicitly_empty_overlay_fields():
     source = _source()
     plan = _plan(
         source,
         pd.DataFrame({"source_index": ["a"]}, index=pd.RangeIndex(1, name="plan_id")),
     )
 
-    with pytest.raises(ValueError, match="no overlay fields"):
-        pf.explode(source, plan)
+    with pytest.raises(ValueError, match="resolved to no fields"):
+        pf.explode(source, plan, overlay_fields=())
+
+
+def test_plan_columns_carry_by_identity_alignment():
+    # The blessed composition for plan-only columns (slice fields, the
+    # source_index mapping): explode inherits the plan's index identity, so
+    # plan columns attach afterwards via concat_columns — identity alignment,
+    # no collision strategy needed (join-dimensions-identity.md §5).
+    source = _source()
+    plan = _plan(
+        source,
+        pd.DataFrame(
+            {"source_index": ["a", "b", "a"], "score": [0.1, 0.2, 0.3]},
+            index=pd.RangeIndex(3, name="plan_id"),
+        ),
+        pf.ValueField(name="score", dtype=float),
+    )
+
+    exploded = pf.explode(source, plan)
+    carried = pf.concat_columns(
+        exploded, pf.keep(plan, ["plan_id", "source_index", "score"])
+    )
+
+    assert carried.schema.names() == (
+        "plan_id",
+        "value",
+        "label",
+        "source_index",
+        "score",
+    )
+    assert carried.table["source_index"].tolist() == ["a", "b", "a"]
+    assert carried.table["score"].tolist() == [0.1, 0.2, 0.3]
+    # The aligned namespaces unified: row identity is still the plan's.
+    assert pf.primary_index_identity(carried) == pf.primary_index_identity(plan)
 
 
 def test_explode_rejects_overlay_field_missing_from_source():

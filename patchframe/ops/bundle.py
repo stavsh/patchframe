@@ -288,14 +288,22 @@ def defer_in_level(
     return context.field(out)
 
 
-def _collect(bundle_ds: Dataset, output: str | None = None) -> Dataset:
-    """Internal terminal: materialize the pending coupling(s) producing ``output``.
+def _collect(
+    bundle_ds: Dataset,
+    output: str | None = None,
+    *,
+    context: Any | None = None,
+) -> Dataset:
+    """Internal terminal: complete the pending coupling(s) producing ``output``.
 
-    Runs the couplings whose end node is ``output`` (via the idempotent
-    ``consume``). Extraction is ``BundleField``-specific: when ``output`` is a
+    Runs the couplings whose end node is ``output`` via ``consume``, which
+    discharges them (consume is literal; lazy-duality-plan.md). When a
+    ``context`` is given (the handle's shared cursor), it is advanced to the
+    consumed snapshot, so a re-collect finds the work already done.
+    Extraction is ``BundleField``-specific: when ``output`` is a
     ``BundleField`` the filled cell *is* a dataset, so it is ``extract``ed and
-    returned; otherwise the container dataset (with ``output`` materialized) is
-    returned. The user-facing entry point is ``FieldHandle.collect()``.
+    returned; otherwise the container dataset (with ``output`` materialized)
+    is returned. The user-facing entry point is ``FieldHandle.collect()``.
     """
 
     from patchframe.ops.builtin.consume import consume
@@ -303,6 +311,8 @@ def _collect(bundle_ds: Dataset, output: str | None = None) -> Dataset:
     if output is None:
         output = _infer_apply_output(bundle_ds)
     filled = consume(bundle_ds, output)
+    if context is not None:
+        context.adopt(filled)
     if isinstance(filled.schema.get(output), BundleField):
         return extract(filled, output)
     return filled

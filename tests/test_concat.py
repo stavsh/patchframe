@@ -9,8 +9,10 @@ from patchframe.data.dimensions import IndexDimension
 from patchframe.dataset.couplings import CouplingSet, Materialize
 from patchframe.dataset.field_composition import ColumnCollisionStrategy
 from patchframe.dataset.fields import DimensionField, IndexColumnField, IndexField, ValueField
+from patchframe.dataset.identity import primary_index_identity
 from patchframe.dataset.schema import Schema
 from patchframe.ops.builtin.concat import concat, concat_columns, concat_rows
+from patchframe.ops.builtin.keep import keep
 from patchframe.ops.builtin.make_from_dataframe import make_from_dataframe
 
 
@@ -79,6 +81,40 @@ class TestConcatRows:
 
 
 class TestConcatColumns:
+    def test_same_identity_index_fields_unify_without_strategy(self):
+        # Identity alignment (join-dimensions-identity.md §5): same-name
+        # IndexFields sharing one IndexIdentity are the same namespace, so
+        # aligning them is not a collision and needs no strategy.
+        base = _dataset(
+            pd.DataFrame({"a": [1, 2], "b": ["x", "y"]}, index=["i", "j"]),
+            ValueField(name="a", dtype=int),
+            ValueField(name="b", dtype=str),
+        )
+        left = keep(base, ["item_id", "a"])
+        right = keep(base, ["item_id", "b"])
+
+        result = concat_columns(left, right)
+
+        assert result.schema.names() == ("item_id", "a", "b")
+        assert result.table["a"].tolist() == [1, 2]
+        assert result.table["b"].tolist() == ["x", "y"]
+        assert primary_index_identity(result) == primary_index_identity(base)
+
+    def test_different_identity_index_fields_still_collide(self):
+        # Distinct namespaces whose labels merely agree as values stay a real
+        # collision: the caller must choose a strategy explicitly.
+        left = _dataset(
+            pd.DataFrame({"a": [1]}, index=["i"]),
+            ValueField(name="a", dtype=int),
+        )
+        right = _dataset(
+            pd.DataFrame({"b": [2]}, index=["i"]),
+            ValueField(name="b", dtype=int),
+        )
+
+        with pytest.raises(ValueError, match="field collision for 'item_id'"):
+            concat_columns(left, right)
+
     def test_default_collision_policy_raises(self):
         left = _dataset(
             pd.DataFrame({"score": [1]}, index=["a"]),

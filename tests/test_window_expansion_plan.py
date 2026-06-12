@@ -93,68 +93,73 @@ def test_window_expansion_plan_from_slice_field_skips_null_rows():
     ]
 
 
-def test_window_expansion_plan_accepts_slice_field_handle_without_advancing_context():
-    x = pf.IndexDimension(name="x")
-    table = pd.DataFrame(
-        {"extent": [x.spec(0, 5)]},
-        index=pd.Index(["a"], name="item_id"),
-    )
-    schema = pf.Schema(
-        fields=(
-            pf.IndexField(name="item_id"),
-            pf.DimensionedSliceField(name="extent"),
-        )
-    )
-    ds = pf.Dataset(state=pf.DatasetState(schema=schema, table=table))
-    ctx = ds.context()
+def test_window_expansion_plan_handle_operand_defers_to_bundle_arm():
+    """Operand-dispatch law: a FieldHandle input selects the lazy arm.
 
-    with ctx:
-        plan = pf.window_expansion_plan(
-            ctx.dataset,
-            field=ctx.field("extent"),
-            windows={"x": pf.AxisWindow(2, 2, include_partial=True)},
-        )
+    The deferred form lifts onto a BundleField carrier (like explode): the
+    source rides in a cell, field/bindings ride as replay params, and collect
+    runs the eager plan construction per cell.
+    """
 
-    assert ctx.dataset is ds
-    assert plan.table["source_index"].tolist() == ["a", "a", "a"]
-
-
-def test_window_expansion_plan_normalize_call_resolves_field_handle():
-    x = pf.IndexDimension(name="x")
-    table = pd.DataFrame(
-        {"extent": [x.spec(0, 5)]},
-        index=pd.Index(["a"], name="item_id"),
-    )
-    schema = pf.Schema(
-        fields=(
-            pf.IndexField(name="item_id"),
-            pf.DimensionedSliceField(name="extent"),
-        )
-    )
-    ds = pf.Dataset(state=pf.DatasetState(schema=schema, table=table))
-    ctx = ds.context()
-
-    call = pf.window_expansion_plan.instance().normalize_call(
-        ctx.dataset,
-        field=ctx.field("extent"),
-        windows={"x": pf.AxisWindow(2, 2)},
-    )
-
-    assert call.kwargs["field"] == "extent"
-    assert call.reference_contexts == (ctx,)
-
-
-def test_window_expansion_plan_accepts_binding_field_handles():
     ds = _dimension_field_dataset()
-    ctx = ds.context()
-
-    plan = pf.window_expansion_plan(
-        ctx.dataset,
-        bindings={"x": (ctx.field("x0"), ctx.field("x1"))},
+    eager = pf.window_expansion_plan(
+        ds,
+        bindings={"x": ("x0", "x1")},
         windows={"x": pf.AxisWindow(20, 20)},
     )
 
-    assert plan.table["source_index"].tolist() == ["a", "a", "b", "b"]
+    b = pf.bundle(src=ds)
+    handle = pf.window_expansion_plan(
+        b.field("src"),
+        bindings={"x": ("x0", "x1")},
+        windows={"x": pf.AxisWindow(20, 20)},
+        out="plan",
+    )
+
+    assert isinstance(handle, pf.FieldHandle)
+    plan = handle.collect()
+    assert plan.table["source_index"].tolist() == eager.table["source_index"].tolist()
+    assert plan.table.index.name == eager.table.index.name
+
+
+def test_window_expansion_plan_field_handles_never_resolve_eagerly():
+    """The law: handles mean lazy — there is no eager handle resolution.
+
+    A mixed call (eager Dataset operand + field handles) is rejected; eager
+    calls pass names, deferral goes through a bundle cell.
+    """
+
+    x = pf.IndexDimension(name="x")
+    table = pd.DataFrame(
+        {"extent": [x.spec(0, 5)]},
+        index=pd.Index(["a"], name="item_id"),
+    )
+    schema = pf.Schema(
+        fields=(
+            pf.IndexField(name="item_id"),
+            pf.DimensionedSliceField(name="extent"),
+        )
+    )
+    ds = pf.Dataset(state=pf.DatasetState(schema=schema, table=table))
+    ctx = ds.context()
+
+    with pytest.raises(TypeError, match="bundle FieldHandles"):
+        pf.window_expansion_plan(
+            ds,
+            field=ctx.field("extent"),
+            windows={"x": pf.AxisWindow(2, 2, include_partial=True)},
+            out="plan",
+        )
+
+    bounded = _dimension_field_dataset()
+    bounded_ctx = bounded.context()
+    with pytest.raises(TypeError, match="bundle FieldHandles"):
+        pf.window_expansion_plan(
+            bounded,
+            bindings={"x": (bounded_ctx.field("x0"), bounded_ctx.field("x1"))},
+            windows={"x": pf.AxisWindow(20, 20)},
+            out="plan",
+        )
 
 
 def test_window_expansion_plan_from_columnar_slice_field():

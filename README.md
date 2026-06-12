@@ -313,7 +313,7 @@ the duality is provided for free.
 
 The duality is wired across the transform operators. `where`, `merge`, `concat`
 (and `concat_rows`/`concat_columns`), `rename`, `drop`, `keep`, `set_index`,
-`join`, and `explode` defer onto a `BundleField` carrier; `slice_data`,
+`join`, `link`, and `explode` defer onto a `BundleField` carrier; `slice_data`,
 `materialize`, and `compose_slice` defer in place as same-level couplings.
 `assign`/`add_column` produce *named* columns from values rather than from a field
 handle, so their handle form creates the targets first with `new_field`:
@@ -321,11 +321,44 @@ handle, so their handle form creates the targets first with `new_field`:
 name and returns a `FieldSelection`; `add_column(handle, values)` is the
 single-field counterpart, returning the handle — no `out` needed, since the
 outputs are already named.
+
+Assignment follows pandas' two conventions, split by mutability. The functional
+form is `ds.assign(c=values)` — returns a new dataset; bare values infer a
+`ValueField`, `(field_def, values)` adds a typed field. The in-place forms live
+on the mutable session types: `ctx["c"] = values` on the cursor (a `Field` key —
+`ctx[field_def] = values` — adds a typed field stating the name once), and
+`handle.loc[ids] = values` for label-scoped updates (scalar label, label list,
+or boolean mask) — each desugars to the `assign` operator and advances the
+shared context. `Dataset` itself is immutable and supports no item assignment.
+assign assigns values to fields; a coupling's output field is not special-cased
+— values land, and while the coupling is still pending, a later `consume` or
+coupling-aware row access recomputes the field over them.
+
+Consume is literal: a coupling is *pending work*, and `consume`/`collect`
+complete it and discharge the couplings they ran — so consuming a chain twice
+is work-idempotent, and assigning after consume is safe by construction. Row
+access (`ds[item_id]`, `.items()`, `handle.loc`) is *evaluation*, not
+consumption: it computes a row's pending work ephemerally — nothing is
+persisted or discharged — which is exactly the per-row training profile;
+`ds["col"]` reads storage.
+
+Row access is also the *exit point* from the dataset world: after evaluation,
+every value converts to plain Python through its field's exit conversion
+(`Field.exit_value`, or `register_field_exit` for field types you do not own)
+— a `BundleField` fiber leaves as a list of records, recursively. The storage
+surface keeps framework objects; hold a fiber as a `Dataset` there when you
+want lazy navigation. For training loops, `ds.rows()` is the positional view:
+a duck-typed map-style dataset (`len` + integer indexing + batched fetch), so
+`DataLoader(ds.rows(), ...)` works directly with no torch dependency in
+patchframe; `ds.rows("sample")` makes each item one field's value.
 `window_expansion_plan` is a transform (source → plan) and a bundle-lifter like
-`explode`; it is eager pending a slot-type-aware gate that tells its eager field
-references apart from a deferred source. Only the true creation operators
-(`make_from_dataframe`, `make_plan`) are eager-only entry points; deferred
-creation is a future workload-gated tier.
+`explode`: a handle operand defers it onto a `BundleField` carrier, and its
+`field`/`bindings` are passed as *names* — replay data resolved against the
+(possibly deferred) source at run time. There is no eager handle resolution
+anywhere on the transform surface: a `FieldHandle` input always selects the
+lazy arm. Only the true creation operators (`make_from_dataframe`,
+`make_plan`) and the terminals (`extract`/`flatten`/`consume`/`collect`) take
+handles without deferring; deferred creation is a future workload-gated tier.
 
 See `examples/lazy_eager_duality_usage.py` for a runnable end-to-end pipeline
 (`bundle` → deferred `merge`/`where`/`drop` → one `collect()`), checked against

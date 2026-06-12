@@ -81,7 +81,7 @@ def test_make_audioset_binds_segments_by_default(tmp_path):
 
     row = ds["clip_a"]
     assert isinstance(row[AUDIO_FIELD], np.ndarray)
-    assert ds[0]["clip_id"] == "clip_a"
+    assert ds.rows()[0]["clip_id"] == "clip_a"  # positional access via the view
     assert row[SEGMENT_FIELD].dims["time"] == slice(0.0, 10.0)
 
 
@@ -107,7 +107,7 @@ def test_audio_files_and_labels_are_separate_sources_before_merge(tmp_path):
     assert isinstance(row[AUDIO_FIELD], np.ndarray)
     assert row[SEGMENT_FIELD].dims["time"] == slice(0.0, 10.0)
     assert merged.table.index.name == "clip_id"
-    assert merged[0]["clip_id"] == "clip_a"
+    assert merged.rows()[0]["clip_id"] == "clip_a"  # positional access via the view
 
 
 def test_wav_data_source_satisfies_array_source_contract(tmp_path):

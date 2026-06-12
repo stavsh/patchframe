@@ -147,11 +147,20 @@ class concat_columns(CompositionOperator):
                     )
                     continue
 
+                slot = positions[field.name]
+                existing = output_fields[slot]
+                if _is_aligned_index_pair(existing, field):
+                    # Same-name IndexFields sharing one IndexIdentity are the
+                    # same namespace: rows correspond by construction (identity
+                    # alignment — join-dimensions-identity.md §5), so this is
+                    # not a collision and needs no strategy. Distinct
+                    # namespaces fall through: their labels are only
+                    # value-comparable, which the caller must say explicitly.
+                    continue
+
                 # Same-name collision: replace the slot with a MergedField that
                 # carries the colliding parents. It is resolved only after every
                 # aspect hook has read the lineage.
-                slot = positions[field.name]
-                existing = output_fields[slot]
                 incoming = FieldParent(input_index, field)
                 parents = (
                     existing.parents + (incoming,)
@@ -256,6 +265,18 @@ class concat(CompositionOperator):
 
     def apply_couplings(self, *states: DatasetState, **kwargs: Any) -> CouplingSet:
         raise NotImplementedError("concat dispatches in __call__.")
+
+
+def _is_aligned_index_pair(existing: Field, incoming: Field) -> bool:
+    """Whether two same-named fields are IndexFields sharing one IndexIdentity."""
+
+    return (
+        isinstance(existing, IndexField)
+        and isinstance(incoming, IndexField)
+        and not isinstance(existing, MergedField)
+        and existing.identity is not None
+        and existing.identity == incoming.identity
+    )
 
 
 def _field_name_order(states: tuple[DatasetState, ...]) -> tuple[str, ...]:

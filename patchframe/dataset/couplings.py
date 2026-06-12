@@ -389,6 +389,20 @@ class CallSpec:
     script-local operator class will not pickle — see ``picklability_error``.
     """
 
+    # TODO(equality): proof CallSpec equality against real user couplings before
+    # relying on it for array-bearing specs. The auto-generated dataclass __eq__
+    # compares ``args``/``kwargs`` element-wise, which *raises* ("truth value of an
+    # array is ambiguous") rather than returning False when a value is a numpy array
+    # / pandas object / torch tensor. This is the common case, not an edge case —
+    # users will routinely defer functions with array arguments (kernels, masks,
+    # constants). It bites wherever couplings are compared by equality: the
+    # derive-path dedup (ops/dispatch.py ``_apply_unary_derive`` and ops/base.py
+    # ``_resolve_couplings``, which use ``in``/equality, not hashing) and any future
+    # set/dedup over couplings. Fix = a safe structural-equality helper (per element:
+    # identity, else element-wise ``all`` for array-likes). Unreachable *today* only
+    # because the sole CallSpec-dedup producer (``map_fields``) builds an
+    # empty-args/kwargs spec with a fresh output name, so the comparison
+    # short-circuits before reaching ``args``/``kwargs``.
     operator: Any
     args: tuple[Any, ...] = ()
     kwargs: Mapping[str, Any] = field(default_factory=dict)
@@ -492,4 +506,61 @@ class ApplyOperator(Coupling):
         cells = [row.get(ref.name) for ref in self.inputs]
         row = dict(row)
         row[self.output.name] = self._apply_operator(cells)
+        return row
+
+
+@dataclass(frozen=True, slots=True)
+class MapCoupling(Coupling):
+    """Deferred per-row Python function over field *values*.
+
+    The per-row sibling of ``ApplyOperator``. Where ``ApplyOperator`` runs a
+    patchframe operator over ``BundleField`` cells (each cell a whole
+    ``Dataset``), ``MapCoupling`` runs a plain callable over the *values* of one
+    or more columns, per row, writing ``fn(*values)`` into ``output``. It is the
+    coupling recorded by ``map_fields``: a per-row-independent, schema-extending
+    add, so it is coupling-able and lives same-level (no bundle).
+
+    The call lives in a serializable ``CallSpec`` whose ``operator`` is the user
+    function, so ``replay(*values)`` invokes ``fn(*values, *args, **kwargs)``.
+    Like the bundle arm, a lambda or script-local function will not pickle, so
+    the recorder warns early via ``warn_if_unpicklable`` (design-constraints §7).
+
+    Row values for ``input_fields`` are passed positionally in declaration order.
+    When an input is a ``DataField``, place a ``Materialize`` coupling upstream so
+    the function receives a concrete array rather than a ``DataAccessor`` — the
+    engine orders ``Materialize`` before this coupling automatically, since its
+    output feeds this coupling's input.
+    """
+
+    inputs: tuple[FieldRef, ...]
+    output: FieldRef
+    call: CallSpec
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "inputs", _coerce_field_ref_tuple(self.inputs))
+        object.__setattr__(self, "output", _coerce_field_ref(self.output))
+
+    @property
+    def fn(self) -> Any:
+        """The deferred per-row function (read view onto ``call``)."""
+
+        return self.call.operator
+
+    def input_fields(self) -> tuple[str, ...]:
+        return tuple(ref.name for ref in self.inputs)
+
+    def output_field(self) -> str:
+        return self.output.name
+
+    def compute(self, state: DatasetState) -> pd.Series:
+        out = pd.Series(index=state.table.index, dtype=object)
+        for label in state.table.index:
+            values = [state.table.at[label, ref.name] for ref in self.inputs]
+            out.at[label] = self.call.replay(*values)
+        return out
+
+    def apply_row(self, row: dict[str, Any], state: DatasetState) -> dict[str, Any]:
+        values = [row.get(ref.name) for ref in self.inputs]
+        row = dict(row)
+        row[self.output.name] = self.call.replay(*values)
         return row

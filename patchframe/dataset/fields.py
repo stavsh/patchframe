@@ -95,6 +95,39 @@ def dtype_compatible(col_dtype: Any, target: pd.api.extensions.ExtensionDtype) -
 
 
 # ---------------------------------------------------------------------------
+# Row-exit conversion registry
+# ---------------------------------------------------------------------------
+
+#: Registered exit conversions by field type — the fallback for decorating
+#: field types you do not own. Resolved by MRO walk, taking precedence over
+#: the field's own ``exit_value`` method; registering a base type therefore
+#: covers its subclasses unless they register more specifically.
+_FIELD_EXITS: dict[type, Any] = {}
+
+
+def register_field_exit(field_type: type, fn: Any) -> None:
+    """Register a row-exit conversion ``fn(field_def, value) -> Any`` for a field type.
+
+    Row access (``ds[item_id]``) exits the dataset world; each value converts
+    through its field's exit. The conversion is owned by the field type
+    (override ``Field.exit_value``); this registry is the extension path for
+    field types you do not own.
+    """
+
+    _FIELD_EXITS[field_type] = fn
+
+
+def exit_value(field_def: "Field", value: Any) -> Any:
+    """Convert one evaluated cell value through its field's exit conversion."""
+
+    for klass in type(field_def).__mro__:
+        fn = _FIELD_EXITS.get(klass)
+        if fn is not None:
+            return fn(field_def, value)
+    return field_def.exit_value(value)
+
+
+# ---------------------------------------------------------------------------
 # Field hierarchy
 # ---------------------------------------------------------------------------
 
@@ -147,6 +180,19 @@ class Field:
             raise ValueError(
                 f"Field '{self.name}': expected dtype {self.dtype!r}, got {series.dtype!r}"
             )
+
+    def exit_value(self, value: Any) -> Any:
+        """Convert one evaluated cell value at the row-exit boundary.
+
+        Row access (``ds[item_id]``) is the exit point from the dataset world:
+        the dict it returns holds plain Python values. The conversion is owned
+        by the field type — the default is identity; container-like fields
+        override (``BundleField`` exports its fiber as records). For field
+        types you do not own, ``register_field_exit`` takes precedence over
+        this method.
+        """
+
+        return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -277,3 +323,20 @@ class BundleField(Field):
 
     def validate_column(self, series: pd.Series) -> None:
         pass  # cells hold Dataset objects (or null when unmaterialized)
+
+    def exit_value(self, value: Any) -> Any:
+        """Export a fiber as a list of records (recursively exited row dicts).
+
+        Row access is the exit point, so a cell-resident sub-dataset leaves as
+        plain Python: one dict per fiber row, each produced by the fiber's own
+        row access — evaluation and exit compose recursively. A pending (null)
+        cell exits as-is. When lazy fiber navigation is wanted, hold the fiber
+        as a ``Dataset`` via the storage surface (``ds.table`` / ``ds["col"]``)
+        instead.
+        """
+
+        from patchframe.dataset.dataset import Dataset
+
+        if not isinstance(value, Dataset):
+            return value
+        return [value[label] for label in value.table.index]

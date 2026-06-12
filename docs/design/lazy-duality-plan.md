@@ -82,7 +82,140 @@ where the couplings that cannot be same-level live. This is `lazy-and-bundle.md`
 
 ## Fork decisions (provisional; revisit if a workload pushes back)
 
-- **The coupling-authoring ops stay declare-only.** They are coupling-able, so
+- **Bindings vs computations (RESOLVED 2026-06-10).** The coupling-authoring
+  family splits in two, and only one half is declare-only:
+  - **Bindings** (`materialize`, `slice_data`, `compose_slice`) declare
+    *structural relations* — "this field materializes on access", "this slice
+    applies to that data". The declaration **is** the eager work; row access
+    realizes it. Declare-only on both arms stays correct: an eager
+    `materialize(ds)` that bulk-loaded everything would invert the package's
+    reason to exist.
+  - **Computations** (`map_fields`, and any future op whose payload is a user
+    function) follow the operand-dispatch law strictly: the **Dataset arm
+    records the coupling and consumes it immediately** (the column is filled
+    now), while the handle arm records only and returns the chaining handle.
+    Deferral is opt-in via handles, exactly as the law promises —
+    `map_fields(ds, ...)` returning a null column broke the "Dataset operand
+    never pays a deferral tax / never defers work" guarantee and made the
+    surface unpredictable (user, 2026-06-10). (The original clause "the
+    coupling stays in place as the recorded recipe, since consume leaves
+    couplings intact" is **superseded 2026-06-11** by the literal-consume
+    fork below: the coupling is discharged; the column is the product.)
+- **Handles always select the lazy arm (RESOLVED 2026-06-11).** For every
+  non-terminating operator, a `FieldHandle` input — anywhere in the call,
+  including nested in selector containers — routes to the lazy arm; there is
+  **no eager handle resolution**. Syntactic sugar is secondary to honesty and
+  consistency (user): a handle that silently resolves eagerly breaks "the
+  type you are holding tells you which surface you are on."
+  Consequences applied:
+  - `window_expansion_plan`'s eager field/bindings handle resolution was a
+    law violation — removed. It now declares `returns=FieldReturn` + `out`
+    and gets the bundle-lift deferred arm (like `explode`); eager calls pass
+    names.
+  - `link` reshaped to the `set_index` pattern (deferred arm; its eager
+    handle sugar dropped). Binary dataset operands precede the param slots
+    (`link(ds, target, field)`) so `ApplyOperator.replay(*cells)` binds
+    positionally — the merge/join operand order.
+  - The **slot-type-aware gate** direction (letting eager field-handle refs
+    coexist with a deferred dataset operand on one op) is **REJECTED** — it
+    was sugar purchased with dishonesty.
+  - Declaration vocabulary, settled: `FieldInput` strictly means "this slot
+    accepts a handle" (same-level duals, where the handle is the lazy
+    trigger; terminals/exits, where handles are the sanctioned eager
+    exception). Field-naming arguments on bundle-arm ops (`set_index.field`,
+    `partition.by`, `link.field`, `window_expansion_plan.field/bindings`,
+    `join.on`) are **`ParamInput`**: replay data resolved against the
+    (possibly deferred) operand's schema at run time — the honest
+    declaration, not a workaround. Terminals (`extract`/`consume`/
+    `flatten`/`collect`) and creation ops keep `DatasetReturn` and remain
+    the only non-lazy handle consumers.
+- **Consume is literal (RESOLVED 2026-06-11): couplings are futures, not
+  formulas.** A coupling is *pending work* — a deferred operator application,
+  exactly as lazy-and-bundle.md §6 calls it — not a persistent column
+  definition. `consume`/`collect` complete pending work and **discharge** the
+  couplings they ran (the partial coupling-instance form discharges only its
+  chain). Consequences, all derived:
+  - Consuming the chain twice is work-idempotent: the second consume finds
+    nothing producing the column (the pre-existing no-producer branch becomes
+    the steady state). Discharge travels with the **output** state — consume
+    is a pure function, so consuming the same *input snapshot* twice
+    recomputes twice (immutability, not an exception).
+  - **Consumption vs evaluation.** Row access (`ds[item_id]`, `items()`,
+    `handle.loc` getter) *evaluates* a row's pending work ephemerally —
+    nothing persisted, nothing discharged. Read paths cannot consume
+    (mutating from `__getitem__` would violate the immutable facade;
+    per-cell discharge is the rejected cell-state machinery). Evaluation is
+    the dataloader semantics: streaming the recipe without completing it,
+    fresh per epoch. Post-consume, row access and the table agree by
+    construction — the consume-then-`__getitem__` wart dissolves.
+  - Assignment-after-consume is safe by construction: consume IS
+    materialize-and-detach, so the annotation flow is one gesture (the
+    explicit freeze the assign-assigns ruling pointed at).
+  - An eager computation (`map_fields(ds, ...)`) computes and discharges —
+    an unpicklable fn no longer rides along on the result.
+  - `handle.collect()` advances the shared cursor to the consumed snapshot
+    (a second collect finds the work done); this also fixed
+    `FieldSelection.collect`, which previously returned the *unfilled*
+    snapshot (its per-field collects never advanced the context — a latent
+    bug surfaced by this fork), and dissolves its shared-coupling re-run
+    TODO.
+  - Forfeited, knowingly: the "recompute button" (assign into an *input*
+    after consumption no longer propagates — re-declare the map), and
+    formula/caching semantics (materialize→evict→re-derive), which belong to
+    the workload-gated executor's own representation if ever needed.
+  - Open, scoped to evaluation: stochastic fns make each row evaluation a
+    fresh draw (consume freezes one). Whether recipes declare determinism is
+    still open (lazy-and-bundle.md §8 constrains the direction).
+- **Row access is the exit point (RESOLVED 2026-06-12).** Two access
+  surfaces, completing the storage/evaluation split:
+  - **Storage** (`ds.table`, `ds["col"]`) keeps framework objects — a fiber
+    cell is a `Dataset`, an unevaluated cell an accessor. This is where lazy
+    navigation of projections lives (a `partition` output is the dataset
+    re-projected; its rows contain datasets; nested laziness composes on
+    this surface).
+  - **Row access** (`ds[item_id]`, `items()`, `loc` getter) = *evaluate +
+    exit*: the row's pending couplings evaluate (ephemerally, per the
+    literal-consume fork), then every value leaves the dataset world as
+    plain Python. The conversion is **owned by the field type** (user
+    ruling): `Field.exit_value` (default identity; `BundleField` exports its
+    fiber as a list of recursively exited records), with
+    `register_field_exit` as the MRO-resolved registry for field types you
+    do not own (precedence over the method). Couplings evaluate over *raw*
+    values — a fuse fn receives the fiber `Dataset` — the exit pass runs
+    after evaluation. **No implicit IO**: an accessor with no declared
+    materialization has no pending work and exits as-is; declaring
+    (`materialize(...)`) is the one-line fix.
+  - **Positional access is a view, not a flag**: `ds.rows(field=None)`
+    returns a duck-typed map-style sequence (`__len__`, `__getitem__(int)`,
+    batched `__getitems__` = positional take into a transient + one bulk
+    consume, source couplings untouched), so `DataLoader(ds.rows())` plugs
+    in directly with **zero torch dependency** — pluggability is the
+    protocol, not the library. A mode flag on the dataset was REJECTED
+    (state-keyed semantics for `ds[5]`; the type-tells-semantics law). The
+    silent int-positional fallback in `__getitem__` is deprecated — with
+    integer row labels it silently changes meaning after any filter.
+- **Assignment conventions (RESOLVED 2026-06-11).** Pandas' two assignment
+  conventions map onto the immutability split: the functional form
+  (`df.assign`) is `Dataset.assign(**cols)` (sugar over the `assign`
+  operator, returns a new dataset); the in-place forms (`df[c] = v`,
+  `df.loc[i, c] = v`) live on the mutable session types — `ctx[name] =
+  values` on the cursor (a `Field` key, `ctx[field_def] = values`, adds a
+  typed field stating the name once — the form only the subscript surface
+  can express, and the assign operator's name-match validation is evidence
+  the name-twice tuple was an error source) and `handle.loc[ids] = values`
+  (scalar label, label list, or boolean mask) — each desugaring to the
+  `assign` operator and advancing the shared context. A `__setitem__` on the immutable `Dataset`
+  facade would be the dishonest-sugar pattern rejected above. **assign
+  assigns values to fields, full stop** (user): handle sugar does not change
+  that, and a coupling's *output* field is not special-cased — values land,
+  and a later `consume` or coupling-aware row access recomputes the field
+  over them; guarding the recipe is the user's concern. A
+  materialized-cells-win law (couplings compute only pending cells, so
+  hand-set values survive recomputation) was proposed and **REJECTED** —
+  it would have made cell-state an engine concept to protect against a
+  user-side error.
+- **The coupling-authoring ops stay declare-only.** (Now scoped to the
+  *bindings* per the split above.) They are coupling-able, so
   they never need a bundle; they are the coupling-authoring layer *beneath* the
   duality, not instances of the lift/in-level machinery. **RESOLVED 2026-06-07:**
   the `bind_` prefix was dropped now that the eager/lazy duality reads naturally
@@ -262,13 +395,16 @@ values keyed by name) fills them and returns a `FieldSelection`. `assign` keeps 
 small `@overload`-style `__call__` split (`Dataset + **cols` vs `selection +
 values`; `target`/`values` positional-only). `add_column` will follow.
 `window_expansion_plan` is **not** a creation op — it is a
-transform (source → plan), a bundle-lifter like `explode`. Its lazy arm needs a
-slot-type-aware gate (only `DatasetInput`-slot handles trigger deferral) so its
-eager `field`/`bindings` references don't misfire. Its old `normalize_call` was
+transform (source → plan), a bundle-lifter like `explode`. (Its lazy arm was
+originally thought to need a slot-type-aware gate so eager `field`/`bindings`
+handle references wouldn't misfire — **superseded 2026-06-11** by the
+handles-always-lazy ruling above: eager handle resolution was removed instead,
+`field`/`bindings` became `ParamInput`, and the bundle-lift arm landed via
+`returns=FieldReturn` + `out`.) Its old `normalize_call` was
 pre-interpreter boilerplate; **modernized 2026-06-07** — `window_expansion_plan`
-is now fully declarative (`dataset=DatasetInput`, `field=FieldInput`,
-`bindings=SelectionInput`, `returns=DatasetReturn`; no `field_handle_inputs`, no
-`normalize_call`). The source-dataset normalization moved to
+is fully declarative (`dataset=DatasetInput`; since 2026-06-11
+`field`/`bindings` are `ParamInput` and `returns=FieldReturn`; no
+`field_handle_inputs`, no `normalize_call`). The source-dataset normalization moved to
 `PlanOperator._normalize_source_plan_call` (signature-driven, activates on a
 `DatasetInput` slot; resolves source + field-handles via the shared
 `Operator._resolve_field_handles_for_dataset`), inherited by any source-dataset

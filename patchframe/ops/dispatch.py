@@ -190,7 +190,10 @@ def _apply_unary_derive(states, transition, output_schema, operator, args, kwarg
     if new_hook is not None:
         new = new_hook(states[0], *args, **kwargs)
     if new:
-        existing = set(couplings.couplings)
+        # Membership by equality, not hashing: a coupling may carry an unhashable
+        # payload (e.g. a MapCoupling's CallSpec, whose kwargs is a dict). The
+        # derived set is small, so the linear scan is fine.
+        existing = list(couplings.couplings)
         additions = tuple(c for c in new if c not in existing)
         if additions:
             couplings = couplings.add(*additions)

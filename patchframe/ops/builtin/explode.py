@@ -33,7 +33,25 @@ from patchframe.ops.transitions import (
 
 
 class explode(PlanConsumerMixin, Operator):
-    """Apply a source-indexed row expansion plan to one dataset."""
+    """Apply a source-indexed row expansion plan to one dataset.
+
+    Output rows gather source rows by the plan's foreign index labels; the
+    output schema is always exactly the plan index plus the source's non-index
+    fields, so the transition contract does not depend on call arguments.
+    ``overlay_fields`` (or inference: every non-index plan field that already
+    exists in the source schema) supplies per-row *values* from the plan; zero
+    overlays is a pure gather.
+
+    Plan-only columns (a fresh slice field, the ``source_index`` mapping for
+    traceability) are deliberately **not** an explode feature: the output
+    inherits the plan's index identity, so plan columns attach afterwards by
+    identity alignment (join-dimensions-identity.md §5) —
+
+        windows = explode(source, plan)
+        windows = concat_columns(windows, keep(plan, ["plan_id", "window"]))
+
+    — keeping each operator's schema contract fixed.
+    """
 
     transitions = TransitionPlan(
         schema=SchemaTransition.construct(),
@@ -228,7 +246,11 @@ def _resolve_overlay_fields(
         else normalize_field_names(overlay_fields)
     )
     if not names:
-        raise ValueError(f"{op_name}: no overlay fields were provided or inferred.")
+        if overlay_fields is not None:
+            raise ValueError(f"{op_name}: overlay_fields resolved to no fields.")
+        # No shared plan/source fields: a pure gather. Plan-only columns
+        # attach afterwards by identity alignment (see the class docstring).
+        return ()
 
     for name in names:
         _validate_overlay_field(source, plan, name, op_name=op_name)

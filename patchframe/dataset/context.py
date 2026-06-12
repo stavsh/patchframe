@@ -7,6 +7,9 @@ from dataclasses import dataclass, field
 from collections.abc import Iterator, Mapping
 from typing import TYPE_CHECKING, Any
 
+import numpy as np
+import pandas as pd
+
 if TYPE_CHECKING:
     from patchframe.dataset.dataset import Dataset
     from patchframe.dataset.fields import Field
@@ -91,6 +94,35 @@ class DatasetContext:
         self.adopt(filled)
         return self.field(field_def.name)
 
+    def __setitem__(self, key: str | Field, value: Any) -> None:
+        """Pandas-style mutating assignment on the cursor: ``ctx[key] = values``.
+
+        Sugar over the ``assign`` operator, advancing this cursor to the
+        result — the mutating sibling of ``Dataset.assign`` (``Dataset``
+        itself stays immutable). Two key forms:
+
+        - a field *name*: bare values infer a ``ValueField``;
+          ``(field_def, values)`` adds a typed field.
+        - a ``Field`` definition: ``ctx[field_def] = values`` — the def
+          carries its own name, so typed assignment states the name once.
+          The value is always the column values (no tuple form).
+
+        Existing columns (including coupling outputs) are simply assigned
+        into; a ``Field`` key must match the existing definition.
+        """
+
+        from patchframe.dataset.fields import Field
+        from patchframe.ops.builtin.assign import assign as assign_op
+
+        if isinstance(key, Field):
+            self.adopt(assign_op(self.dataset, **{key.name: (key, value)}))
+            return
+        if not isinstance(key, str) or not key:
+            raise TypeError(
+                "DatasetContext assignment requires a field-name or Field key."
+            )
+        self.adopt(assign_op(self.dataset, **{key: value}))
+
 
 @dataclass(frozen=True, slots=True)
 class FieldHandle:
@@ -116,28 +148,34 @@ class FieldHandle:
         return self.resolve().name
 
     def collect(self) -> Dataset:
-        """Materialize the pending coupling(s) producing this field; return a Dataset.
+        """Complete the pending coupling(s) producing this field; return a Dataset.
 
         The user-facing exit bridge (lazy-and-bundle.md §1): the nullary terminal,
         the one carve-out to "handles do not execute". Runs the couplings whose
-        end node is this field (via the idempotent ``consume``). When the field is
-        a ``BundleField`` the filled cell is itself a dataset, so it is extracted
-        and returned; otherwise the container dataset (with this field
-        materialized) is returned.
+        end node is this field via ``consume`` — completing **and discharging**
+        them (consume is literal) — and advances the shared context to the
+        consumed snapshot, so a second ``collect`` finds the work already done.
+        When the field is a ``BundleField`` the filled cell is itself a dataset,
+        so it is extracted and returned; otherwise the container dataset (with
+        this field materialized) is returned.
         """
 
         from patchframe.ops.bundle import _collect
 
-        return _collect(self.dataset_context.dataset, self.name)
+        return _collect(
+            self.dataset_context.dataset, self.name, context=self.dataset_context
+        )
 
     def items(self) -> Iterator[tuple[Any, Any]]:
-        """Iterate ``(item_id, value)`` over the field's rows, materializing per row.
+        """Iterate ``(item_id, value)`` over the field's rows, evaluating per row.
 
         Each value comes from coupling-aware row access (``dataset[item_id][name]``),
-        which consumes that row's couplings — so a bound ``Materialize`` (e.g.
-        ``materialize(ds.field(name)).items()``) yields arrays one at a time, the
-        training memory profile, rather than a bulk ``collect()``. For a plain
-        value column it yields the values directly.
+        which *evaluates* that row's pending couplings — ephemerally: nothing is
+        persisted and nothing is discharged (evaluation, not consumption). So a
+        bound ``Materialize`` (e.g. ``materialize(ds.field(name)).items()``)
+        yields arrays one at a time, the training memory profile, rather than a
+        bulk ``collect()``; iterating again evaluates again. For a plain value
+        column it yields the values directly.
         """
 
         dataset = self.dataset_context.dataset
@@ -150,6 +188,63 @@ class FieldHandle:
 
         for _, value in self.items():
             yield value
+
+    @property
+    def loc(self) -> _FieldLocIndexer:
+        """Label-based, coupling-aware access to a single row's value.
+
+        ``handle.loc[item_id]`` returns this field's value at ``item_id`` via
+        coupling-aware row access (``dataset[item_id][name]``): any couplings
+        producing the field for that row (a bound ``Materialize``, a
+        ``MapCoupling``) are *evaluated* on access — one row at a time,
+        ephemerally; nothing is persisted or discharged (evaluation, not
+        consumption). The single-row inspection counterpart to :meth:`collect`
+        (whole field, consuming) and :meth:`items` (every row, evaluating).
+        """
+
+        return _FieldLocIndexer(self)
+
+
+def _is_label_selection(key: Any) -> bool:
+    """Whether a ``.loc`` key selects multiple rows (vs a scalar label)."""
+
+    return isinstance(key, (list, slice, np.ndarray, pd.Series, pd.Index))
+
+
+@dataclass(frozen=True, slots=True)
+class _FieldLocIndexer:
+    """Label-based accessor for one ``FieldHandle`` (see ``FieldHandle.loc``)."""
+
+    handle: FieldHandle
+
+    def __getitem__(self, item_id: Any) -> Any:
+        dataset = self.handle.dataset_context.dataset
+        return dataset[item_id][self.handle.name]
+
+    def __setitem__(self, key: Any, value: Any) -> None:
+        """Label-scoped assignment through the shared cursor.
+
+        ``handle.loc[item_id] = v`` sets one cell; ``handle.loc[[i, j]] = [...]``
+        and boolean masks follow pandas ``.loc`` semantics. Sugar over the
+        ``assign`` operator: the updated column is assigned whole and the cursor
+        advances. Assigning into a coupling's output field is not special-cased
+        — assign assigns values; a later consume or coupling-aware access
+        recomputes the field, and guarding against that is the user's concern.
+        """
+
+        from patchframe.ops.builtin.assign import assign as assign_op
+
+        context = self.handle.dataset_context
+        dataset = context.dataset
+        name = self.handle.name
+        column = dataset.table[name].copy()
+        if _is_label_selection(key):
+            column.loc[key] = value
+        else:
+            # Scalar label: ``.at`` keeps object cells (tuples, dicts) intact
+            # where ``.loc`` would try to broadcast them.
+            column.at[key] = value
+        context.adopt(assign_op(dataset, **{name: column}))
 
 
 @dataclass(frozen=True, slots=True)
@@ -212,7 +307,9 @@ class FieldSelection:
         context = self.dataset_context
         if context is None:
             raise ValueError("FieldSelection.collect: empty selection.")
-        #TODO: collect here can possibly run the same coupling multiple times if the selected fields share couplings; or if another field's coupling runs after the second field's coupling but before the first field's coupling, then the first field's coupling will run twice. We could track which couplings have already been run in this collection pass and skip them on subsequent fields, but that adds complexity and overhead; it may be simpler to just document that users should avoid passing overlapping selections to operators with side effects.
+        # Each collect advances the shared context to its consumed (discharged)
+        # snapshot, so couplings shared between selected fields run once — the
+        # later collects find them already consumed.
         for handle in self.handles:
             handle.collect()
         return context.dataset

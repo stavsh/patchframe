@@ -527,10 +527,16 @@ def make_torch_dataloader(
     collate_fn: Any = pad_audio_batch,
     **kwargs: Any,
 ) -> Any:
-    """Create a basic PyTorch DataLoader over patchframe rows."""
+    """Create a basic PyTorch DataLoader over patchframe rows.
+
+    ``Dataset.rows()`` is the positional, duck-typed map-style view (len +
+    int indexing + batched fetch), so it plugs into ``DataLoader`` directly:
+    the sampler's linear indices resolve to row labels inside the view, and
+    each item is the evaluated, exited row dict.
+    """
     torch = _torch()
     return torch.utils.data.DataLoader(
-        dataset,
+        dataset.rows(),
         batch_size=batch_size,
         shuffle=shuffle,
         num_workers=num_workers,

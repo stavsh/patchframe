@@ -9,6 +9,7 @@ from patchframe.dataset.couplings import (
     Coupling,
     CouplingSet,
     FieldRef,
+    MapCoupling,
     Materialize,
     UnpicklableCallWarning,
 )
@@ -42,6 +43,7 @@ from patchframe.dataset.fields import (
     IndexField,
     ValueField,
     dtype_compatible,
+    register_field_exit,
     to_nullable_dtype,
 )
 from patchframe.dataset.identity import (
@@ -85,6 +87,7 @@ __all__ = [
     "IndexColumnField",
     "IndexField",
     "IndexIdentity",
+    "MapCoupling",
     "Materialize",
     "Schema",
     "UnpicklableCallWarning",
@@ -102,6 +105,7 @@ __all__ = [
     "normalize_column",
     "primary_index_field",
     "primary_index_identity",
+    "register_field_exit",
     "register_field_policy",
     "resolve_foreign_index_field",
     "resolve_column_collision",

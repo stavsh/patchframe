@@ -11,7 +11,6 @@ import pandas as pd
 
 from patchframe.data.dimensioned_slice_array import DimensionedSliceArray
 from patchframe.data.windows import AxisWindow
-from patchframe.dataset.context import FieldHandle
 from patchframe.dataset.couplings import BindDimensions
 from patchframe.dataset.dataset import Dataset
 from patchframe.dataset.fields import (
@@ -21,9 +20,9 @@ from patchframe.dataset.fields import (
 from patchframe.ops.base import OperatorCall, PlanOperator
 from patchframe.ops.signature import (
     DatasetInput,
-    DatasetReturn,
-    FieldInput,
-    SelectionInput,
+    FieldOutput,
+    FieldReturn,
+    ParamInput,
 )
 from patchframe.ops.transitions import PerRowIndependence
 from patchframe.ops.builtin.assign import assign
@@ -50,29 +49,33 @@ class window_expansion_plan(PlanOperator):
     plan_index_name = PLAN_INDEX_NAME
     required_plan_fields = (SOURCE_INDEX_FIELD, PLAN_SLICE_FIELD)
     per_row_independent = PerRowIndependence.INDEPENDENT
-    # Declarative operands: an explicit source dataset plus the field references
-    # (resolved eagerly to build the plan). The source-dataset + field-handle
-    # normalization is inherited from PlanOperator; no custom normalize_call.
-    # DatasetReturn keeps it eager — the deferred arm awaits the slot-type-aware
-    # gate that distinguishes these eager field refs from a deferred source.
+    # Operand-dispatch law (lazy-duality-plan.md, 2026-06-11): a FieldHandle
+    # input — anywhere, including nested in `bindings` — selects the lazy arm
+    # (a bundle-lift, like explode); there is NO eager handle resolution. Eager
+    # calls pass the dataset plus field *names*. `field`/`bindings` are
+    # ParamInput: replay data resolved against the (possibly deferred) source
+    # at run time, never handle operands — the set_index/`on=` pattern.
     dataset = DatasetInput()
-    field = FieldInput(field_type=DimensionedSliceField)
-    bindings = SelectionInput()
-    returns = DatasetReturn()
+    field = ParamInput(default=None)
+    bindings = ParamInput(default=None)
+    out = FieldOutput()
+    returns = FieldReturn()
 
     def __call__(
         self,
         dataset: Dataset,
         *,
         windows: Mapping[str, AxisWindow],
-        field: str | FieldHandle | None = None,
+        field: str | None = None,
         bindings: Any | None = None,
         source_index_field: str = SOURCE_INDEX_FIELD,
         slice_field: str = PLAN_SLICE_FIELD,
         plan_index_name: str = PLAN_INDEX_NAME,
+        out: str | None = None,
     ) -> Dataset:
         # __call__ stays only to document the public signature and apply the
-        # field/source_index_field/slice_field/plan_index_name defaults.
+        # defaults; `out` names the deferred result cell on the lazy arm and is
+        # ignored by the eager path.
         return PlanOperator.__call__(
             self,
             dataset,
@@ -82,6 +85,7 @@ class window_expansion_plan(PlanOperator):
             source_index_field=source_index_field,
             slice_field=slice_field,
             plan_index_name=plan_index_name,
+            out=out,
         )
 
     def run(self, call: OperatorCall, _) -> Dataset:

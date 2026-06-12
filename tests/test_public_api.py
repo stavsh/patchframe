@@ -36,6 +36,9 @@ def test_top_level_exports_user_facing_operators():
     assert pf.explode
     assert pf.compose_slice
     assert pf.slice_data
+    assert pf.link
+    assert pf.map_fields
+    assert pf.partition
     assert pf.window_expansion_plan
     assert pf.ContextEffect
     assert pf.OperatorCall

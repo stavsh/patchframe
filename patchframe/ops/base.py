@@ -838,7 +838,9 @@ class DatasetOperator(Operator):
         new = self.new_couplings(state, *args, **kwargs)
         if not new:
             return derived
-        existing = set(derived.couplings)
+        # Membership by equality, not hashing: a coupling may carry an unhashable
+        # payload (e.g. a MapCoupling's CallSpec, whose kwargs is a dict).
+        existing = list(derived.couplings)
         additions = tuple(c for c in new if c not in existing)
         return derived.add(*additions) if additions else derived
 
