@@ -19,6 +19,13 @@ from patchframe.data.manager import (
     get_default_manager,
     reset_default_manager,
 )
+from patchframe.data.predicates import (
+    MatchPredicate,
+    Stage,
+    assert_predicate_contract,
+    equals,
+    overlap,
+)
 from patchframe.data.source import DataSource
 from patchframe.data.windows import AxisWindow
 
@@ -26,6 +33,11 @@ __all__ = [
     "ArrayDataSource",
     "AxisWindow",
     "CategoricalDimension",
+    "MatchPredicate",
+    "Stage",
+    "assert_predicate_contract",
+    "equals",
+    "overlap",
     "DataAccessor",
     "DataSource",
     "Dimension",

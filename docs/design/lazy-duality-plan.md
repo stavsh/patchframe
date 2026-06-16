@@ -166,6 +166,32 @@ where the couplings that cannot be same-level live. This is `lazy-and-bundle.md`
   - Open, scoped to evaluation: stochastic fns make each row evaluation a
     fresh draw (consume freezes one). Whether recipes declare determinism is
     still open (lazy-and-bundle.md §8 constrains the direction).
+  - **Forked-handle in-place aliasing — RESOLVED 2026-06-15 (fail-loud).** The
+    fork surfaces a read/write hazard (user): `h2 = op(ds.field("f"));
+    op(ds.field("f"), out="f")`. Both handles share one cached context, so both
+    couplings accrete on one graph; couplings reference fields **by name with no
+    versioning**, so the topo-sort's output-in-inputs edge silently runs the
+    in-place rewrite of `f` ahead of `h2`'s read — `h2` gets the after-value, in
+    *either* collect order (it is baked into the one shared graph). consume-is-
+    literal is the messenger, not the cause: it adds the action-at-a-distance
+    (collecting one handle discharges + advances the shared cursor under the
+    other). Distinct from the already-ruled assign case (there the user *eagerly*
+    sequenced an overwrite; here two independent **deferred** declarations let the
+    engine fabricate a hazardous order). **Ruling: reject, not version** (no SSA /
+    `FieldIdentity`-shadow machinery — that fights the name-based `FieldRef`
+    design; carve the seam, don't build it). The invariant is narrow because the
+    engine *intentionally* reorders clean out-of-order chains
+    (`test_map_coupling::test_engine_orders_map_after_its_upstream_producer`): a
+    plain producer→consumer chain (`c=f(b); b=g(a)`) is unambiguous (`b` has one
+    producer that does not read `b`). The hazard requires an **in-place** coupling
+    (reads *and* writes `N`, so `N` has a before- and an after-value) whose `N` is
+    *also* read by a **different** coupling **recorded before** it — recorded
+    *after* is the legitimate `materialize(f)`→`map_fields(f→x)` shape. Enforced in
+    `CouplingEngine.validate` (`_check_inplace_aliasing`), so it fires when the set
+    is first interpreted (collect / consume / row access); no new engine state.
+    Tests: `tests/test_coupling_aliasing.py` (5). `map_fields`'s `out=`-must-be-
+    fresh guard is an adjacent, stricter operator-level protection (its
+    overwrite-allowing TODO can now lean on this check for the dangerous subset).
 - **Row access is the exit point (RESOLVED 2026-06-12).** Two access
   surfaces, completing the storage/evaluation split:
   - **Storage** (`ds.table`, `ds["col"]`) keeps framework objects — a fiber

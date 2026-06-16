@@ -49,7 +49,7 @@ class CouplingEngine:
         return self._order
 
     def validate(self) -> None:
-        """Validate that all coupling input/output fields exist in the schema."""
+        """Validate field references and reject in-place read/write aliasing."""
         field_names = set(self.schema.names())
         for c in self.couplings.couplings:
             for name in c.input_fields():
@@ -62,6 +62,49 @@ class CouplingEngine:
                 raise ValueError(
                     f"Coupling output not in schema: {output!r} ({type(c).__name__})"
                 )
+        self._check_inplace_aliasing()
+
+    def _check_inplace_aliasing(self) -> None:
+        """Reject a field transformed in place that an earlier coupling also reads.
+
+        An *in-place* coupling both reads and writes a field ``N`` (``N`` is among
+        its inputs and is its output), so ``N`` denotes two values — a before and
+        an after. The topo-sort always runs the writer ahead of any reader of
+        ``N`` (the output-in-inputs edge), so a *different* coupling that reads
+        ``N`` is silently fed the after-value. That is intended only when the
+        reader was declared to consume the result — i.e. recorded *after* the
+        in-place transform (the ``materialize(f)`` → ``map_fields(f → x)`` chain).
+        A reader recorded *before* the transform wanted the before-value, which the
+        single-column model cannot hold: the order is ambiguous.
+
+        This is the forked-handle hazard:
+        ``h2 = op(ds.field("f")); op(ds.field("f"), out="f")`` — ``h2`` reads ``f``
+        expecting its original value, but the second op rewrites ``f`` in place.
+        Reject it (fail-loud) rather than silently miscompute. Note this does not
+        flag a normal out-of-order chain (``c = f(b); b = g(a)``): there ``b`` has
+        a single producer that does not read ``b``, so it is unambiguous.
+        """
+
+        couplings = self.couplings.couplings
+        for w_idx, writer in enumerate(couplings):
+            target = writer.output_field()
+            if target not in writer.input_fields():
+                continue  # ordinary producer, not an in-place transform
+            for r_idx, reader in enumerate(couplings):
+                if r_idx >= w_idx:
+                    continue  # recorded after the transform: meant to see the result
+                if reader is writer or reader.output_field() == target:
+                    continue  # same-output chain mate, not an external reader
+                if target in reader.input_fields():
+                    raise ValueError(
+                        f"Field {target!r} is transformed in place by "
+                        f"{type(writer).__name__}, but an earlier pending coupling "
+                        f"({type(reader).__name__}) also reads {target!r}; the "
+                        f"execution order is ambiguous (the reader was declared "
+                        f"first, but topo-ordering runs the in-place write first). "
+                        f"Write to a fresh field name, or consume the reader before "
+                        f"overwriting {target!r}."
+                    )
 
     def _compute_order(self) -> tuple[Coupling, ...]:
         """Topo-sort with insertion-order tie-breaking and chain semantics."""

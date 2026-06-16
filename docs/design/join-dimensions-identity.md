@@ -79,6 +79,15 @@ allowed this.)
 5. **Correspondences are relations, not functions.** Non-unique mappings are
    first-class; `explode` repeating source rows by repeated foreign labels is
    the feature, and join cardinality stays `unknown`.
+6. **Two plan kinds, by cardinality** (clarified 2026-06-15). A *single-FK*
+   plan is **one-to-many**: one side is the plan's own index, each row maps to
+   one foreign (`window_expansion_plan`: window → one clip; `explode` consumes
+   this). **Many-to-many** needs a *throwaway index and two FKs* — the
+   correspondence pair table (`match`/`join` output; `implode`/`candidates=`
+   consume it). A single FK cannot carry many-to-many. The compact *factored*
+   alternative is two single-FK plans through a shared block identity, which
+   is **not** one plan dataset (different lengths) — see
+   `dimension-join-execution.md` §2.
 
 ## 2. One join model: per-dimension predicates
 
@@ -136,7 +145,10 @@ A predicate must supply two things:
 Execution order is a fixed heuristic, not a query optimizer: identity scopes
 and `equals` predicates partition first; interval/spatial predicates pair
 within partitions; anything without a bulk strategy filters candidate pairs
-last.
+last. (The execution model — the blocks→pairs IR, stage classes, null
+semantics, the two-tier commensurability rule, and the dimension/source
+resolvability handshake — is settled in `dimension-join-execution.md`,
+2026-06-12.)
 
 ## 3. The `on=` split
 

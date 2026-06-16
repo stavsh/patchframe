@@ -33,6 +33,7 @@ from examples.multimodal_fusion import (
     WINDOW_FIELD,
     RampAudioSource,
     RampVideoSource,
+    attach_matched_segments,
     combine_sample,
     effective_durations,
     expected_sample,
@@ -44,9 +45,15 @@ from examples.multimodal_fusion import (
 )
 
 
+def _windows() -> pf.Dataset:
+    # The interval join is build-time now: window the clips, then match cues to
+    # each window (match -> implode) so every window carries its matched cues.
+    return attach_matched_segments(window_clips(make_fusion_clips()))
+
+
 @pytest.fixture(scope="module")
 def samples() -> pf.FieldHandle:
-    return fuse_windows(window_clips(make_fusion_clips()))
+    return fuse_windows(_windows())
 
 
 def _carrier(samples: pf.FieldHandle) -> pf.Dataset:
@@ -184,7 +191,7 @@ def test_eager_arm_computes_now_and_matches_handle_collect():
     # The operand-dispatch law: map_fields on the Dataset computes every
     # sample immediately (the coupling stays as the recipe); the handle arm
     # defers until collect. Both arms produce identical samples.
-    windows = window_clips(make_fusion_clips())
+    windows = _windows()
     handle = fuse_windows(windows)
     assert isinstance(handle, pf.FieldHandle)
     assert _carrier(handle).table[SAMPLE_FIELD].isna().all()
@@ -213,7 +220,7 @@ def test_deferred_pipeline_is_picklable():
     # (BindSlice, Materialize, MapCoupling with its CallSpec) must round-trip.
     with warnings.catch_warnings():
         warnings.simplefilter("error", pf.UnpicklableCallWarning)
-        handle = fuse_windows(window_clips(make_fusion_clips()))
+        handle = fuse_windows(_windows())
 
     couplings = _carrier(handle).state.couplings
     restored = pickle.loads(pickle.dumps(couplings))

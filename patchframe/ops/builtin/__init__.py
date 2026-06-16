@@ -7,8 +7,10 @@ from patchframe.ops.builtin.materialize import materialize
 from patchframe.ops.builtin.slice_data import slice_data
 from patchframe.ops.builtin.concat import concat, concat_columns, concat_rows
 from patchframe.ops.builtin.consume import consume
+from patchframe.ops.builtin.dimension_join import dimension_join
 from patchframe.ops.builtin.drop import drop
 from patchframe.ops.builtin.explode import explode
+from patchframe.ops.builtin.implode import implode
 from patchframe.ops.builtin.join import (
     DimensionJoin,
     FieldEqualityJoin,
@@ -19,6 +21,7 @@ from patchframe.ops.builtin.join import (
 from patchframe.ops.builtin.keep import keep
 from patchframe.ops.builtin.link import link
 from patchframe.ops.builtin.map_fields import map_fields
+from patchframe.ops.builtin.match import match
 from patchframe.ops.builtin.make_from_dataframe import make_from_dataframe
 from patchframe.ops.builtin.make_plan import make_plan
 from patchframe.ops.builtin.merge import merge
@@ -42,13 +45,16 @@ __all__ = [
     "concat_columns",
     "concat_rows",
     "consume",
+    "dimension_join",
     "drop",
     "explode",
+    "implode",
     "join",
     "keep",
     "link",
     "make_from_dataframe",
     "make_plan",
+    "match",
     "merge",
     "partition",
     "rename",

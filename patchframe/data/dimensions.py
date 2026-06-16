@@ -54,6 +54,27 @@ class Dimension(ABC):
         """Convert a stored natural-unit value to a resolved DimensionIndex."""
         ...
 
+    def comparable_with(self, other: "Dimension") -> bool:
+        """Whether values in this dimension are commensurable with ``other``'s.
+
+        The term-validity judgment for dimensional joins (and, eventually,
+        slice resolution): commensurability is decided by the dimension *type*
+        — not by generic dataclass equality (which would conflate the axis with
+        per-source *sampling*), and not by name alone (which would ignore type:
+        an ``IndexDimension`` and a ``TemporalDimension`` named ``"x"`` are not
+        commensurable). See ``dimension-join-execution.md`` §5.
+
+        The default — same concrete type and same name — is the axis identity.
+        It deliberately excludes *resolution* parameters that subtypes carry
+        (``TemporalDimension.sample_rate``, ``CategoricalDimension.categories``):
+        those govern how a *source* discretizes the axis, not whether two values
+        can be compared. Subtypes that carry genuine *axis* refinements (a
+        geometry CRS) override to fold them in. Distinct from ``__eq__``, which
+        is structural identity including resolution params.
+        """
+
+        return type(self) is type(other) and self.name == other.name
+
 
 @dataclass(frozen=True, slots=True)
 class IndexDimension(Dimension):
@@ -81,6 +102,15 @@ class TemporalDimension(Dimension):
     to_index() converts the stored seconds-valued slice to sample indices
     using sample_rate.
 
+    ``sample_rate`` is the axis's *sampling* (a per-source storage property),
+    not its identity: it is excluded from ``comparable_with`` so honest rates
+    join (video at 30000/1001 vs a transcript in seconds). It is optional —
+    ``None`` is a **continuous, unsampled** axis (an interval in seconds with
+    no discretization), which is the true shape of e.g. transcript cues. A
+    continuous axis is fully joinable but cannot resolve to backend indices, so
+    ``to_index`` raises. Rates may be rational (NTSC 30000/1001), hence
+    ``int | float``.
+
     Example
     -------
     dim = TemporalDimension(name="time", sample_rate=16000)
@@ -88,7 +118,7 @@ class TemporalDimension(Dimension):
     di = dim.to_index(slice(1.5, 4.0))  # → DimensionIndex("time", slice(24000, 64000))
     """
 
-    sample_rate: int = 1
+    sample_rate: int | float | None = None
 
     def spec(self, *values: float) -> DimensionedSlice:
         """Return a DimensionedSlice covering [start, end) in seconds."""
@@ -100,6 +130,13 @@ class TemporalDimension(Dimension):
     def to_index(self, value: slice) -> DimensionIndex:
         """Convert a seconds-valued slice to a sample-index DimensionIndex."""
         sr = self.sample_rate
+        if sr is None:
+            raise ValueError(
+                f"TemporalDimension {self.name!r} is a continuous (unsampled) axis "
+                "(sample_rate=None): it has no backend resolution, so it cannot "
+                "convert seconds to sample indices. Give it a sample_rate to bind "
+                "it to a sampled source, or use it only for comparison (joins)."
+            )
         return DimensionIndex(
             name=self.name,
             value=slice(int(value.start * sr), int(value.stop * sr)),

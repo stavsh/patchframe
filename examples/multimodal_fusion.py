@@ -42,8 +42,9 @@ per-clip offset — so every fused sample is exactly verifiable), but the data
 - Video runs at the NTSC rate **30000/1001 ≈ 29.97 fps**, so equal-length
   windows do **not** contain equal frame counts (59 vs 60 frames per 2 s
   window, by index truncation) — batch collation cannot assume fixed shapes.
-  Note ``TemporalDimension.sample_rate`` is *typed* ``int``; the fractional
-  rate works only by duck typing, and the truncation policy is implicit.
+  ``TemporalDimension.sample_rate`` is ``int | float | None``, so the rational
+  rate is first-class; the seconds→index truncation policy is still implicit
+  in ``to_index`` (an open boundary-rounding question).
 - The audio and video streams of a clip report **different durations** (as
   real containers do); the clip's usable extent is trimmed to the shared
   minimum before windowing.
@@ -70,8 +71,8 @@ VIDEO_DURATIONS: dict[str, float] = {"clip_a": 5.04, "clip_b": 3.07, "clip_c": 6
 AUDIO_DURATIONS: dict[str, float] = {"clip_a": 4.98, "clip_b": 3.12, "clip_c": 6.46}
 
 #: NTSC frame rate. Deliberately not an integer: real video is 30000/1001 or
-#: 24000/1001 far more often than a clean 30. TemporalDimension's sample_rate
-#: is typed int — the float works by duck typing only (a surfaced core gap).
+#: 24000/1001 far more often than a clean 30. TemporalDimension.sample_rate is
+#: int | float | None, so the rational rate is a first-class sampling.
 VIDEO_FPS = 30000 / 1001
 FRAME_HEIGHT = 6
 FRAME_WIDTH = 8
@@ -90,6 +91,7 @@ CAPTION_SLACK_SECONDS = 0.25
 VIDEO_FIELD = "video"
 AUDIO_FIELD = "audio"
 SEGMENTS_FIELD = "segments"
+SEG_SPAN_FIELD = "seg_span"  # the cue interval composed into a time-slice for the join
 WINDOW_FIELD = "window"
 SAMPLE_FIELD = "sample"
 CLIP_START_FIELD = "clip_start"
@@ -194,12 +196,15 @@ def effective_durations(
 def _clock_dimension() -> pf.TemporalDimension:
     """The shared clock: seconds-valued time, independent of any modality rate.
 
-    Windows are planned against this dimension in seconds; each modality's
-    source carries its *own* ``time`` dimension at its native rate and converts
-    the same seconds-valued slice to frame/sample indices at resolve time.
+    A **continuous** axis (``sample_rate=None``) — it is the comparison frame,
+    never a sampled source. Windows are planned against it in seconds; each
+    modality's source carries its *own* ``time`` dimension at its native rate
+    and converts the same seconds-valued slice to frame/sample indices at
+    resolve time. (Previously this carried a fake ``sample_rate=1`` only to
+    satisfy a required field; the honest shape is no sampling at all.)
     """
 
-    return pf.TemporalDimension(name="time", sample_rate=1)
+    return pf.TemporalDimension(name="time", sample_rate=None)
 
 
 def clip_offset(item_id: Any, durations: Mapping[str, float]) -> float:
@@ -507,19 +512,17 @@ def make_transcript(
 
 
 def attach_transcript_segments(clips: pf.Dataset, transcript: pf.Dataset) -> pf.Dataset:
-    """Attach per-clip transcript fibers by identity alignment.
+    """Group transcript cues *by clip* into per-clip fibers (the aggregation arm).
 
-    The resolved partition/aggregate fork (partition-aggregate.md): ``link``
+    A standalone illustration of ``partition``'s aggregation arm, distinct from
+    the window-level interval *join* (``attach_matched_segments``): ``link``
     types ``clip_id`` as a reference into the clips namespace, ``partition``
-    groups cue rows into per-clip member sub-datasets (the tall bundle —
-    ``domain=clips`` makes the base total, so a clip with no cues gets an
-    *empty fiber* with the member schema intact), and the fiber column
-    attaches by identity alignment: the base inherits the clips identity, so
-    ``concat_columns`` needs no collision strategy.
-
-    MARKER (interval join, roadmap): matching cues to *windows* is still done
-    inside ``combine_sample``; when the real interval join lands, the linked
-    transcript joins against the window plan directly.
+    groups cue rows into per-clip sub-datasets (``domain=clips`` makes the base
+    total — a clip with no cues gets an *empty fiber*), and the fiber attaches
+    by identity alignment (the base inherits the clips identity, so
+    ``concat_columns`` needs no collision strategy). Grouping one dataset by a
+    key is ``partition``; matching two datasets by overlapping intervals is the
+    join — the two are different operations, shown side by side.
     """
 
     transcript = pf.link(transcript, clips, "clip_id")
@@ -530,17 +533,16 @@ def attach_transcript_segments(clips: pf.Dataset, transcript: pf.Dataset) -> pf.
 def make_fusion_clips(
     video_durations: Mapping[str, float] = VIDEO_DURATIONS,
     audio_durations: Mapping[str, float] = AUDIO_DURATIONS,
-    transcripts_srt: Mapping[str, str] = TRANSCRIPTS_SRT,
 ) -> pf.Dataset:
-    """Compose the three modalities into one clip-indexed dataset.
+    """Compose the dense modalities into one clip-indexed dataset.
 
     Video and audio are separate sources (each ``make_*`` registers its own
     ``DataSource``); ``concat_columns`` aligns them on the shared clip index, so
     the composed dataset carries accessors into two different sources side by
     side. The clip's usable clock extent is the per-clip minimum of the two
-    stream durations (real containers disagree). The transcript stays sparse
-    and is attached as a per-clip transcript fiber — a sub-dataset in a
-    ``BundleField`` cell (see ``attach_transcript_segments``).
+    stream durations (real containers disagree). The sparse transcript is
+    *not* attached here — it is matched to windows by interval join after
+    windowing (see ``attach_matched_segments``).
     """
 
     video = make_video_clips(video_durations)
@@ -553,7 +555,6 @@ def make_fusion_clips(
         audio,
         collision=pf.ColumnCollisionStrategy(mode="keep", side="left"),
     )
-    clips = attach_transcript_segments(clips, make_transcript(transcripts_srt))
 
     clock = _clock_dimension()
     usable = effective_durations(video_durations, audio_durations)
@@ -606,6 +607,51 @@ def window_clips(
     return pf.materialize(windows, (VIDEO_FIELD, AUDIO_FIELD))
 
 
+def attach_matched_segments(
+    windows: pf.Dataset,
+    transcript: pf.Dataset = None,  # type: ignore[assignment]
+) -> pf.Dataset:
+    """Match transcript cues to windows by clip + time overlap (the real join).
+
+    This is the interval join the example was built to motivate — it replaces
+    the per-window interval filter that used to live inside ``combine_sample``.
+    The matching is now *build-time*, dimensional, and declarative:
+
+    1. ``compose_slice`` composes each cue's ``(seg_start, seg_end)`` into a
+       seconds-valued ``time`` slice (the interval-predicate operand); ``consume``
+       materializes it so the join can read it.
+    2. ``match`` correlates windows and cues on the **clip scope** plus a
+       **padded time overlap** — the caption slack is now predicate vocabulary
+       (``overlap(pad=...)``), not hand-rolled Python — emitting a window↔cue
+       correspondence plan.
+    3. ``implode`` collapses that correspondence into one **fiber of matched
+       cues per window** (``domain=windows`` makes it total — a window with no
+       captions gets an empty fiber). The fiber attaches by identity alignment.
+
+    A cue overlapping two windows lands in both (``implode`` replicates); the
+    overlap test is symmetric with the old window-padded filter, so the fused
+    text is unchanged — only the interval reasoning moved out of the fuse fn.
+    """
+
+    if transcript is None:
+        transcript = make_transcript()
+    transcript = pf.compose_slice(
+        transcript,
+        slice_field=SEG_SPAN_FIELD,
+        bindings={"time": ("seg_start", "seg_end")},
+    )
+    transcript = pf.consume(transcript, SEG_SPAN_FIELD)
+
+    correspondence = pf.match(
+        windows,
+        transcript,
+        on=[(SOURCE_INDEX_FIELD, "clip_id")],
+        predicates={"time": pf.overlap(pad=CAPTION_SLACK_SECONDS)},
+    )
+    groups = pf.implode(transcript, correspondence, windows, into=SEGMENTS_FIELD)
+    return pf.concat_columns(windows, pf.keep(groups, [SEGMENTS_FIELD]))
+
+
 def captions_for_window(
     segments: tuple[tuple[float, float, str], ...],
     start_seconds: float,
@@ -635,20 +681,18 @@ def _is_annotation(text: str) -> bool:
     return text.startswith("[") and text.endswith("]")
 
 
-def segment_cues(segments: pf.Dataset) -> tuple[tuple[float, float, str], ...]:
-    """Project a per-clip transcript fiber to plain (start, end, text) cues.
+def speech_texts(segments: pf.Dataset) -> tuple[str, ...]:
+    """Caption texts of a window's matched cues, non-speech annotations stripped.
 
-    ``partition`` keeps the member schema, so the fiber arrives as a real
-    sub-dataset and the cues are read off its columns; the reference path
-    (``expected_sample``) builds the same triples from ``parse_srt`` directly.
+    The cues arrive already interval-matched (``attach_matched_segments`` did
+    the overlap), so the only consumer-side filter left is *content*: drop
+    ``[Music]``-style annotations. Rolling captions still contribute repeated
+    text — the fiber preserves cue (SRT) order, and deduplication is a
+    downstream choice, not done here.
     """
 
-    table = segments.table
     return tuple(
-        (float(start), float(end), str(text))
-        for start, end, text in zip(
-            table["seg_start"], table["seg_end"], table["text"], strict=True
-        )
+        str(text) for text in segments.table["text"] if not _is_annotation(str(text))
     )
 
 
@@ -668,19 +712,17 @@ def combine_sample(
 
     By the time this runs, the coupling engine has already ordered
     slice -> materialize -> map for the row, so ``video``/``audio`` arrive as
-    windowed arrays and ``segments`` as the clip's transcript fiber. The
-    transcript is interval-filtered to the window here — the v1 stand-in for a
-    real interval join (roadmap #3) — with slack for approximate caption
-    timing (see ``captions_for_window``).
+    windowed arrays and ``segments`` as the window's **matched** cue fiber —
+    the interval join (``attach_matched_segments``) already selected the cues
+    overlapping this window with caption slack. The only work left here is
+    content: strip non-speech annotations and join the text.
     """
 
     interval = window.dims["time"]
     return {
         "video": np.asarray(video),
         "audio": np.asarray(audio),
-        "transcript": " ".join(
-            captions_for_window(segment_cues(segments), interval.start, interval.stop)
-        ),
+        "transcript": " ".join(speech_texts(segments)),
         "window_seconds": (float(interval.start), float(interval.stop)),
     }
 
@@ -764,23 +806,30 @@ def expected_windows(
 
 def main() -> None:
     clips = make_fusion_clips()
-    print("=== clips: two array sources + sparse SRT transcript on one index ===")
+    transcript = make_transcript()
+
+    print("=== clips: two dense array sources; transcript grouped by clip ===")
     print("(audio/video stream durations disagree; clip_stop is the trimmed extent)")
-    # The segments column holds per-clip transcript fibers (sub-datasets);
-    # summarize it through the aggregation pattern: map_fields over fibers.
-    overview = pf.map_fields(clips, [SEGMENTS_FIELD], cue_count, out="n_cues")
+    # partition's *aggregation* arm: group the sparse transcript by clip and
+    # count cues per clip — distinct from the window-level interval *join* below.
+    clip_groups = attach_transcript_segments(clips, transcript)
+    overview = pf.map_fields(clip_groups, [SEGMENTS_FIELD], cue_count, out="n_cues")
     print(
         overview.table[
             ["video_duration", "audio_duration", CLIP_STOP_FIELD, "n_cues"]
         ].to_string()
     )
 
-    windows = window_clips(clips)
+    # The interval *join*: tile clips into windows, then match transcript cues
+    # to each window by clip + padded time overlap (match -> implode), so every
+    # window carries its own matched cues.
+    windows = attach_matched_segments(window_clips(clips), transcript)
     samples = fuse_windows(windows)  # the lazy handle arm: nothing runs yet
     layout = expected_windows()
     print(
         f"\nPlanned {len(windows.table)} windows of {WINDOW_SECONDS}s "
-        f"(stride {WINDOW_STRIDE_SECONDS}s) across {len(clips.table)} clips"
+        f"(stride {WINDOW_STRIDE_SECONDS}s) across {len(clips.table)} clips, "
+        f"each carrying its interval-matched cues"
     )
 
     # Laziness: the carrier still holds raw accessors and an all-null sample

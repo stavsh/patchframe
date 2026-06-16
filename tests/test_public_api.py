@@ -39,6 +39,12 @@ def test_top_level_exports_user_facing_operators():
     assert pf.link
     assert pf.map_fields
     assert pf.partition
+    assert pf.dimension_join
+    assert pf.match
+    assert pf.implode
+    assert pf.equals
+    assert pf.overlap
+    assert pf.assert_predicate_contract
     assert pf.window_expansion_plan
     assert pf.ContextEffect
     assert pf.OperatorCall
