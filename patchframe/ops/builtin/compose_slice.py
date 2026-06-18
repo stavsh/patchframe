@@ -7,6 +7,7 @@ from typing import Any
 import pandas as pd
 
 from patchframe.dataset.couplings import BindDimensions
+from patchframe.dataset.dataset import Dataset
 from patchframe.dataset.fields import DimensionedSliceField, DimensionField
 from patchframe.dataset.schema import Schema
 from patchframe.dataset.state import DatasetState
@@ -64,6 +65,31 @@ class compose_slice(DatasetOperator):
     slice_field = FieldOutput(field_type=DimensionedSliceField)
     bindings = SelectionInput()
     returns = FieldReturn()
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        # Operand-dispatch law (IO-criterion refinement, 2026-06-16): composing
+        # a slice is *metadata*, not IO, so a Dataset operand computes it now —
+        # record the BindDimensions coupling and consume it immediately (the
+        # slice column is the product; consume discharges per the literal-consume
+        # law). A FieldHandle operand records only and returns the chaining
+        # handle: the explicit relationship-coupling (deferred) path. Only
+        # ``materialize`` stays declare-only on both arms (its work *is* IO).
+        result = DatasetOperator.__call__(self, *args, **kwargs)
+        if not isinstance(result, Dataset):
+            return result  # handle arm: a chaining FieldHandle (deferred path)
+        context = self.resolve_dataset_context()
+        if context is not None and context.dataset is result:
+            # Ambient cursor (string dispatch in a `with ctx:` block): a
+            # deferred-building idiom, not a Dataset operand — leave the
+            # coupling pending for the terminal consume.
+            return result
+        # Explicit Dataset operand: compute the slice now (args[0] is the ds).
+        slice_field = kwargs.get("slice_field")
+        if slice_field is None and len(args) > 1:
+            slice_field = args[1]
+        from patchframe.ops.builtin.consume import consume
+
+        return consume(result, slice_field)
 
     def apply_schema(
         self,

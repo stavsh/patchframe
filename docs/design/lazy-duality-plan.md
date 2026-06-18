@@ -82,14 +82,33 @@ where the couplings that cannot be same-level live. This is `lazy-and-bundle.md`
 
 ## Fork decisions (provisional; revisit if a workload pushes back)
 
-- **Bindings vs computations (RESOLVED 2026-06-10).** The coupling-authoring
-  family splits in two, and only one half is declare-only:
-  - **Bindings** (`materialize`, `slice_data`, `compose_slice`) declare
-    *structural relations* — "this field materializes on access", "this slice
-    applies to that data". The declaration **is** the eager work; row access
-    realizes it. Declare-only on both arms stays correct: an eager
+- **Bindings vs computations (RESOLVED 2026-06-10; refined 2026-06-17 — the
+  real criterion is IO, not "binding").** The coupling-authoring family splits,
+  but the split is narrower than first drawn:
+  - **The one declare-only binding is `materialize`.** Its semantics *is*
+    deferred decode — declare-only on both arms is correct because an eager
     `materialize(ds)` that bulk-loaded everything would invert the package's
-    reason to exist.
+    reason to exist. **IO is what must defer.**
+  - **`slice_data` and `compose_slice` are NOT exceptions (moved 2026-06-17).**
+    They were grouped with `materialize` because they share the slice pipeline,
+    but they do *no IO*: `compose_slice` assembles `DimensionedSlice` objects
+    from scalar columns; `slice_data` attaches a slice to the data accessors
+    (which stay lazy — the decode is still `materialize`'s job). Deferring them
+    bought *nothing* (per-row realization costs the same as eager) and only
+    forced `consume` boilerplate (the `compose_slice`+`consume` pair in the
+    fusion example was the tell, user 2026-06-17). So they now follow the
+    operand-dispatch law like any computation: **Dataset operand → compute now**
+    (record the coupling, consume immediately = discharge per literal-consume —
+    the slice column / sliced accessors are the product); **FieldHandle operand
+    → record only and defer** (the explicit relationship-coupling path — "if you
+    want a deferred binding, hold a handle"). Implemented as the `map_fields`
+    `__call__` pattern, with one carve-out: the **ambient cursor** (string
+    dispatch inside `with ctx:`) is left deferred — it is a deferred-*building*
+    idiom, not a Dataset operand, and the terminal `consume` realizes it.
+  - **Bindings (now: `materialize` only)** declare a *structural relation*
+    ("this field materializes on access") whose declaration **is** the eager
+    work; row access realizes it. Declare-only on both arms stays correct
+    because its work is IO.
   - **Computations** (`map_fields`, and any future op whose payload is a user
     function) follow the operand-dispatch law strictly: the **Dataset arm
     records the coupling and consumes it immediately** (the column is filled

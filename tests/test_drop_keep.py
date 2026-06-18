@@ -7,6 +7,7 @@ import pytest
 from patchframe.data.dimensioned_slice import DimensionedSlice
 from patchframe.data.dimensions import Dimensions, IndexDimension
 from patchframe.data.manager import reset_default_manager
+from patchframe.dataset.context import FieldHandle
 from patchframe.dataset.couplings import BindDimensions, BindSlice, CouplingSet
 from patchframe.dataset.dataset import Dataset
 from patchframe.dataset.fields import (
@@ -182,17 +183,29 @@ class TestBindDimensions:
         assert ds2.schema.has("clip")
         assert isinstance(ds2.schema.get("clip"), DimensionedSliceField)
 
-    def test_adds_null_column_to_table(self):
+    def test_dataset_arm_computes_the_slice_now(self):
+        # Operand-dispatch law: a Dataset operand computes the slice eagerly
+        # (compose_slice is metadata, not IO), and consume discharges it.
         ds = self._ds_with_dim_fields()
         ds2 = compose_slice(ds, slice_field="clip", bindings={"x": ("start", "end")})
         assert "clip" in ds2.table.columns
-        assert ds2.table["clip"].isna().all()
+        assert ds2.table["clip"].iloc[0].dims["x"] == slice(0, 20)
+        assert ds2.table["clip"].iloc[1].dims["x"] == slice(10, 50)
+        assert len(ds2.couplings.couplings) == 0  # discharged (literal consume)
 
-    def test_adds_bind_dimensions_coupling(self):
-        ds = self._ds_with_dim_fields()
-        ds2 = compose_slice(ds, slice_field="clip", bindings={"x": ("start", "end")})
-        assert len(ds2.couplings.couplings) == 1
-        assert isinstance(ds2.couplings.couplings[0], BindDimensions)
+    def test_handle_arm_records_the_coupling_and_defers(self):
+        # The explicit relationship-coupling path: a FieldHandle operand records
+        # BindDimensions and returns a chaining handle without computing.
+        ctx = self._ds_with_dim_fields().context()
+        handle = compose_slice(
+            slice_field="clip",
+            bindings={"x": (ctx.field("start"), ctx.field("end"))},
+        )
+        assert isinstance(handle, FieldHandle)
+        carrier = ctx.dataset
+        assert carrier.table["clip"].isna().all()  # deferred
+        (coupling,) = carrier.couplings.couplings
+        assert isinstance(coupling, BindDimensions)
 
     def test_consume_produces_correct_slices(self):
         ds = self._ds_with_dim_fields()
@@ -219,7 +232,9 @@ class TestBindDimensions:
         ds = self._ds_with_dim_fields()
         ds2 = compose_slice(ds, slice_field="clip", bindings={"x": ("start", "end")})
         ds3 = compose_slice(ds2, slice_field="clip", bindings={"x": ("start", "end")})
-        assert len(ds3.couplings.couplings) == 1
+        # Eager + idempotent: the slice recomputes to the same value, discharged.
+        assert ds3.table["clip"].iloc[0].dims["x"] == slice(0, 20)
+        assert len(ds3.couplings.couplings) == 0
 
     def test_raises_if_slice_field_exists_as_wrong_type(self):
         ds = self._ds_with_dim_fields()

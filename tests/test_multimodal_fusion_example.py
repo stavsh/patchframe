@@ -217,7 +217,8 @@ def test_eager_arm_computes_now_and_matches_handle_collect():
 def test_deferred_pipeline_is_picklable():
     # The fusion fn is module-level, so building the whole deferred pipeline
     # must not trip UnpicklableCallWarning, and the recorded coupling state
-    # (BindSlice, Materialize, MapCoupling with its CallSpec) must round-trip.
+    # (Materialize + the MapCoupling with its CallSpec; slice_data is eager now
+    # and discharged) must round-trip.
     with warnings.catch_warnings():
         warnings.simplefilter("error", pf.UnpicklableCallWarning)
         handle = fuse_windows(_windows())

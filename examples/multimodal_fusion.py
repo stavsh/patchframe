@@ -588,7 +588,9 @@ def window_clips(
     needs no collision strategy; join-dimensions-identity.md §5). The same
     time-only window slice is then bound to *both* data fields: each source
     resolves seconds to its native indices at materialization. Nothing is
-    decoded here — slice_data/materialize only record couplings.
+    decoded here — ``slice_data`` attaches the window slice to the accessors
+    eagerly (metadata, no IO), and ``materialize`` records the decode coupling,
+    deferred until row access.
     """
 
     plan = pf.window_expansion_plan(
@@ -618,8 +620,8 @@ def attach_matched_segments(
     The matching is now *build-time*, dimensional, and declarative:
 
     1. ``compose_slice`` composes each cue's ``(seg_start, seg_end)`` into a
-       seconds-valued ``time`` slice (the interval-predicate operand); ``consume``
-       materializes it so the join can read it.
+       seconds-valued ``time`` slice (the interval-predicate operand) — eager
+       on a Dataset operand, so the slice is computed now, ready for the join.
     2. ``match`` correlates windows and cues on the **clip scope** plus a
        **padded time overlap** — the caption slack is now predicate vocabulary
        (``overlap(pad=...)``), not hand-rolled Python — emitting a window↔cue
@@ -640,7 +642,6 @@ def attach_matched_segments(
         slice_field=SEG_SPAN_FIELD,
         bindings={"time": ("seg_start", "seg_end")},
     )
-    transcript = pf.consume(transcript, SEG_SPAN_FIELD)
 
     correspondence = pf.match(
         windows,

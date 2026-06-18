@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from patchframe.dataset.couplings import BindSlice, FieldRef
+from patchframe.dataset.dataset import Dataset
 from patchframe.dataset.fields import DataField, DimensionedSliceField
 from patchframe.dataset.state import DatasetState
 from patchframe.ops.base import DatasetOperator
@@ -41,6 +42,31 @@ class slice_data(DatasetOperator):
     slice_field = FieldInput(field_type=DimensionedSliceField)
     data_field = FieldInput(field_type=DataField, output=True)
     returns = FieldReturn()
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        # Operand-dispatch law (IO-criterion refinement, 2026-06-16): attaching
+        # a slice to the data accessors is *metadata* (the accessors stay lazy —
+        # the decode is ``materialize``'s job, still deferred), not IO, so a
+        # Dataset operand does it now: record BindSlice and consume immediately
+        # (producing sliced-but-undecoded accessors; consume discharges). A
+        # FieldHandle operand records only and defers — the explicit
+        # relationship-coupling path.
+        result = DatasetOperator.__call__(self, *args, **kwargs)
+        if not isinstance(result, Dataset):
+            return result  # handle arm: a chaining FieldHandle (deferred path)
+        context = self.resolve_dataset_context()
+        if context is not None and context.dataset is result:
+            # Ambient cursor (string dispatch in a `with ctx:` block): a
+            # deferred-building idiom, not a Dataset operand — leave the
+            # coupling pending for the terminal consume.
+            return result
+        # Explicit Dataset operand: attach the slice now (args[0] is the ds).
+        data_field = kwargs.get("data_field")
+        if data_field is None and len(args) > 2:
+            data_field = args[2]
+        from patchframe.ops.builtin.consume import consume
+
+        return consume(result, data_field)
 
     def new_couplings(
         self,

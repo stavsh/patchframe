@@ -26,6 +26,7 @@ import pandas as pd
 
 from patchframe.data.manager import SourceManager, get_default_manager
 from patchframe.data.source import DataSource
+from patchframe.dataset.context import FieldHandle
 from patchframe.dataset.couplings import CallSpec, Coupling, CouplingSet
 from patchframe.dataset.dataset import Dataset
 from patchframe.dataset.fields import ForeignIndexField, IndexField
@@ -235,7 +236,7 @@ class Operator(metaclass=OperatorMeta):
         """Human-readable operator name."""
         return type(self).__name__
 
-    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+    def __call__(self, *args: Any, **kwargs: Any) -> Dataset | FieldHandle:
         """Execute this operator: the lazy dual arm, or the eager lifecycle.
 
         Operand-type dispatch (lazy-duality-plan.md Phase 4). When a *dual*
@@ -251,7 +252,7 @@ class Operator(metaclass=OperatorMeta):
             return self._dispatch_lazy(args, kwargs)
         return self._run_eager(*args, **kwargs)
 
-    def _run_eager(self, *args: Any, **kwargs: Any) -> Any:
+    def _run_eager(self, *args: Any, **kwargs: Any) -> Dataset:
         """Execute the eager normalized-call lifecycle."""
 
         call = self.normalize_call(*args, **kwargs)
@@ -294,7 +295,7 @@ class Operator(metaclass=OperatorMeta):
             raise ValueError(f"{self.name}: FieldHandles must share one DatasetContext.")
         return True
 
-    def _dispatch_lazy(self, args: tuple[Any, ...], kwargs: Mapping[str, Any]) -> Any:
+    def _dispatch_lazy(self, args: tuple[Any, ...], kwargs: Mapping[str, Any]) -> FieldHandle:
         sig = self.signature
         assert sig is not None  # guarded by _is_dual_lazy_call
         context = self._field_handle_contexts(args, kwargs)[0]
@@ -460,7 +461,7 @@ class Operator(metaclass=OperatorMeta):
             **dict(call.kwargs),
         )
 
-    def run(self, call: OperatorCall, transitions: TransitionPlan) -> Any:
+    def run(self, call: OperatorCall, transitions: TransitionPlan) -> Dataset|FieldHandle:
         """Execute a normalized call. Override in direct ``Operator`` subclasses."""
 
         raise NotImplementedError(
@@ -1243,7 +1244,7 @@ class CompositionOperator(Operator):
     )
     advances_dataset_context: ClassVar[bool] = True
 
-    def __call__(self, *datasets: Dataset, **kwargs: Any) -> Dataset:
+    def __call__(self, *datasets: Dataset, **kwargs: Any) -> Dataset | FieldHandle:
         return Operator.__call__(self, *datasets, **kwargs)
 
     def _compose(self, *datasets: Dataset, **kwargs: Any) -> Dataset:

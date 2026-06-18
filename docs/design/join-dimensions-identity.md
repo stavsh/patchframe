@@ -87,7 +87,9 @@ allowed this.)
    consume it). A single FK cannot carry many-to-many. The compact *factored*
    alternative is two single-FK plans through a shared block identity, which
    is **not** one plan dataset (different lengths) — see
-   `dimension-join-execution.md` §2.
+   `dimension-join-execution.md` §2. Typing plans by shape (rather than
+   duck-typing FK presence), so consumers dispatch on `ExpansionPlan` vs
+   `CorrespondencePlan` vs a factored bundle, is `schema-specs.md` (deferred).
 
 ## 2. One join model: per-dimension predicates
 

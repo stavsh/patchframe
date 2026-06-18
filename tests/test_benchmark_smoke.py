@@ -101,15 +101,16 @@ def test_consume_chained_bind_dimensions_keeps_dimensioned_slice_array_columnar(
     assert set(scalar.dims) == {"time", "x", "y"}
 
 
-def test_consume_bind_slice_without_materialization_keeps_lazy_accessors():
+def test_eager_slice_data_attaches_slice_without_decoding():
+    # compose_slice and slice_data are eager on a Dataset operand (metadata, not
+    # IO): the slice is composed and attached to the data accessors now — but
+    # the accessors stay lazy, because the *decode* is materialize's job and is
+    # still deferred. So a sliced-but-undecoded accessor results, no IO.
     ds = make_multidim_dataset(1_000, value_cols=0, string_cols=0, include_data=True)
     ds = compose_slice(ds, slice_field="slice", bindings=dimension_bindings())
     ds = slice_data(ds, slice_field="slice", data_field="data")
-    bind_slice_coupling = ds.couplings.couplings[-1]
 
-    result = consume(ds, bind_slice_coupling)
-
-    accessor = result.table["data"].iloc[0]
+    accessor = ds.table["data"].iloc[0]
     assert isinstance(accessor, DataAccessor)
     assert accessor.dimensioned_slice is not None
     assert set(accessor.dimensioned_slice.dims) == {"time", "x", "y"}

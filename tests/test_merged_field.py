@@ -21,10 +21,24 @@ def _ds(index_name: str, *cols: str) -> pf.Dataset:
     return pf.make_from_dataframe(table, schema)
 
 
+def _bound(ds: pf.Dataset, slice_field: str, data_field: str) -> pf.Dataset:
+    """Attach a *deferred* BindSlice coupling referencing the two fields.
+
+    (``slice_data`` is eager on a Dataset operand now and would discharge the
+    coupling; these tests need a pending coupling to exercise concat/merge
+    coupling pruning, so the coupling is attached directly.)
+    """
+
+    coupling = pf.BindSlice(
+        slice_field=pf.FieldRef(slice_field), data_field=pf.FieldRef(data_field)
+    )
+    return ds.replace_state(couplings=ds.couplings.add(coupling))
+
+
 def test_concat_columns_collision_prunes_losing_input_couplings():
     # both inputs declare "tag"; each carries a distinct coupling referencing it
-    left = pf.slice_data(_ds("left_id", "tag", "lval"), "tag", "lval")
-    right = pf.slice_data(_ds("right_id", "tag", "rval"), "tag", "rval")
+    left = _bound(_ds("left_id", "tag", "lval"), "tag", "lval")
+    right = _bound(_ds("right_id", "tag", "rval"), "tag", "rval")
 
     # collision side defaults to "left": left's "tag" wins, right's loses
     result = pf.concat_columns(left, right, collision="keep")
@@ -40,8 +54,8 @@ def test_concat_columns_collision_prunes_losing_input_couplings():
 
 
 def test_concat_columns_without_collision_unions_couplings():
-    left = pf.slice_data(_ds("left_id", "sa", "da"), "sa", "da")
-    right = pf.slice_data(_ds("right_id", "sb", "db"), "sb", "db")
+    left = _bound(_ds("left_id", "sa", "da"), "sa", "da")
+    right = _bound(_ds("right_id", "sb", "db"), "sb", "db")
 
     # no shared field names — no collision, both couplings survive
     result = pf.concat_columns(left, right)
@@ -50,8 +64,8 @@ def test_concat_columns_without_collision_unions_couplings():
 
 
 def test_merge_collision_prunes_losing_input_couplings():
-    left = pf.slice_data(_ds("item_id", "tag", "lval"), "tag", "lval")
-    right = pf.slice_data(_ds("item_id", "tag", "rval"), "tag", "rval")
+    left = _bound(_ds("item_id", "tag", "lval"), "tag", "lval")
+    right = _bound(_ds("item_id", "tag", "rval"), "tag", "rval")
     plan = pf.join(left, right)
 
     # "tag" collides; collision side defaults left, so right's "tag" loses
