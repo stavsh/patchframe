@@ -152,6 +152,18 @@ Patchframe is stricter because it is carrying dataset meaning:
 
 This strictness is useful when a bad merge can silently corrupt a training set.
 
+### Constrained pandas escape
+
+Patchframe does not try to express every pandas transform immediately. For
+one-off table operations, `pf.pipe(ds, fn)` is the sanctioned `.table` escape:
+`fn` receives a copy of the table and returns a DataFrame, then patchframe
+revalidates the result against a declared schema and index-identity transition.
+
+By default, `pipe` is for row/value transforms that keep the same schema and
+stay inside the input row identity namespace. For rebuilds, callers must provide
+an explicit `Schema` and declare a freshly minted row identity. That keeps
+pandas available without silently dropping dataset structure.
+
 ### Inspectable joins
 
 Patchframe separates join planning from merge materialization. A join can
