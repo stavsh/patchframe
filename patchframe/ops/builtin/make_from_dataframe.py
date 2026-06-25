@@ -83,9 +83,11 @@ class make_from_dataframe(CreationOperator):
         # Name the table index after the schema's primary IndexField so row
         # identity is self-describing. Index-name-sensitive operators (set_index,
         # concat) and IndexField.validate_column rely on this.
+        # The field names its own index axis (a CompositeIndexField names the
+        # MultiIndex levels; a plain IndexField names the single axis).
         index_field = next((f for f in schema.fields if isinstance(f, IndexField)), None)
-        if index_field is not None and working_table.index.name != index_field.name:
-            working_table = working_table.rename_axis(index_field.name)
+        if index_field is not None:
+            working_table = index_field.ensure_index_names(working_table)
 
         schema.validate_table(working_table)
 

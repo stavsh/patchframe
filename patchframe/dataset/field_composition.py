@@ -9,6 +9,8 @@ from typing import ClassVar, Literal
 import pandas as pd
 
 from patchframe.dataset.fields import (
+    CompositeField,
+    CompositeIndexField,
     DimensionField,
     Field,
     IndexColumnField,
@@ -356,6 +358,70 @@ class IndexColumnFieldCompositionPolicy(FieldCompositionPolicy):
         return self.compose_rows(fields, context)
 
 
+class CompositeFieldCompositionPolicy(FieldCompositionPolicy):
+    """CompositeField composition is deferred — fail loud, never silently corrupt.
+
+    The composition operators map one schema field to one table column by name
+    (``concat.py``), but a ``CompositeField`` spans N dotted columns; composing it
+    needs the 1->N mapping (row-stacking the columns, merging sub-schemas), which
+    is future work alongside a centralized ``Field.table_columns()``. Until then
+    every composition entry point raises rather than producing a phantom column.
+
+    Registered separately from a future ``CompositeIndexField`` policy: the policy
+    registry resolves by MRO and the two are distinct types, so each composes by
+    its own rules (a column group vs the row identity).
+    """
+
+    def _unsupported(self, field: Field) -> NotImplementedError:
+        return NotImplementedError(
+            f"CompositeField {field.name!r}: composition (concat/merge) is not yet "
+            "supported — it spans multiple columns. Expand or consume the composite "
+            "to its columns first (docs/design/composite-field.md §composition)."
+        )
+
+    def check_row_compatible(self, field, others, context):
+        raise self._unsupported(field)
+
+    def compose_rows(self, fields, context):
+        raise self._unsupported(_first_field(fields))
+
+    def compose_column(self, field, existing_fields, context):
+        raise self._unsupported(field)
+
+    def compose_key(self, fields, context):
+        raise self._unsupported(_first_field(fields))
+
+
+class CompositeIndexFieldCompositionPolicy(FieldCompositionPolicy):
+    """Composite-*index* composition is deferred — fail loud.
+
+    CRITICAL that this is registered: ``CompositeIndexField`` subclasses
+    ``IndexField``, so without its own policy the MRO would resolve to
+    ``IndexFieldCompositionPolicy`` (single-level: composes by ``.identity``,
+    demotes to ``IndexColumnField``) and silently mishandle a ``MultiIndex``.
+    Determined by atomicity (composite indexes compose iff their sub-schemas
+    match); building it is mechanical, deferred as a scope cut.
+    """
+
+    def _unsupported(self, field: Field) -> NotImplementedError:
+        return NotImplementedError(
+            f"CompositeIndexField {field.name!r}: composition (concat/merge) over a "
+            "composite index is not yet supported (docs/design/composite-field.md §2)."
+        )
+
+    def check_row_compatible(self, field, others, context):
+        raise self._unsupported(field)
+
+    def compose_rows(self, fields, context):
+        raise self._unsupported(_first_field(fields))
+
+    def compose_column(self, field, existing_fields, context):
+        raise self._unsupported(field)
+
+    def compose_key(self, fields, context):
+        raise self._unsupported(_first_field(fields))
+
+
 _FIELD_POLICIES: dict[type[Field], FieldCompositionPolicy] = {}
 
 
@@ -469,3 +535,5 @@ register_field_policy(ValueField, ValueFieldCompositionPolicy())
 register_field_policy(DimensionField, DimensionFieldCompositionPolicy())
 register_field_policy(IndexField, IndexFieldCompositionPolicy())
 register_field_policy(IndexColumnField, IndexColumnFieldCompositionPolicy())
+register_field_policy(CompositeField, CompositeFieldCompositionPolicy())
+register_field_policy(CompositeIndexField, CompositeIndexFieldCompositionPolicy())

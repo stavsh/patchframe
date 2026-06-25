@@ -15,13 +15,19 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import KW_ONLY, dataclass, field
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import numpy as np
 import pandas as pd
 
 from patchframe.data.dimensions import Dimension
 from patchframe.dataset.identity import FieldIdentity, IndexIdentity, new_field_identity
+
+if TYPE_CHECKING:
+    # Annotation-only: ``CompositeField`` holds a ``Schema`` instance, but
+    # ``schema`` imports ``fields`` — so the runtime import would be circular.
+    # ``from __future__ import annotations`` keeps the annotation a string.
+    from patchframe.dataset.schema import Schema
 
 # ---------------------------------------------------------------------------
 # Dtype conversion helpers
@@ -194,6 +200,27 @@ class Field:
 
         return value
 
+    def table_columns(self) -> tuple[str, ...]:
+        """The table column name(s) this field occupies.
+
+        The centralized field->column mapping: one column by default. An index
+        field occupies the table *index* (``()``); a ``CompositeField`` spans its
+        dotted columns. Operators that enumerate a field's columns (validate,
+        keep, drop, rename) route through this rather than assuming ``field.name``.
+        """
+
+        return (self.name,)
+
+    def rename_table_columns(self, new_name: str) -> dict[str, str]:
+        """Table-column renames implied by renaming this field to ``new_name``."""
+
+        return {self.name: new_name}
+
+    def validate_in_table(self, table: pd.DataFrame) -> None:
+        """Validate this field against the table — its own column by default."""
+
+        self.validate_column(table[self.name])
+
 
 @dataclass(frozen=True, slots=True)
 class IndexField(Field):
@@ -223,6 +250,48 @@ class IndexField(Field):
                 f"IndexField '{self.name}': the table index must be named "
                 f"{self.name!r}, got {series.name!r}."
             )
+
+    def table_columns(self) -> tuple[str, ...]:
+        return ()  # the primary index is the table index, not a column
+
+    def rename_table_columns(self, new_name: str) -> dict[str, str]:
+        return {}  # the index axis renames separately, not a column
+
+    def validate_in_table(self, table: pd.DataFrame) -> None:
+        self.validate_column(table.index.to_series())
+
+    def ensure_index_names(self, table: pd.DataFrame) -> pd.DataFrame:
+        """Name the table's index axis after this field (self-describing identity)."""
+
+        if table.index.name != self.name:
+            return table.rename_axis(self.name)
+        return table
+
+    def level_names(self) -> tuple[str, ...]:
+        """The index level names — one for a single index (this field's name)."""
+
+        return (self.name,)
+
+    def to_data_fields(self) -> tuple["Field", ...]:
+        """The data column field(s) this index becomes when reset to columns.
+
+        A single index demotes to one ``IndexColumnField`` that *remembers* its
+        old namespace (so it can be re-promoted or identity-aligned); a composite
+        index demotes to its level fields. Used by ``reset_index`` and by
+        ``set_index``'s demote — index->column is the field's own knowledge, not
+        an operator's ``isinstance`` branch.
+        """
+
+        return (
+            IndexColumnField(
+                name=self.name,
+                dtype=self.dtype,
+                nullable=True,
+                metadata=self.metadata,
+                index_identity=self.identity,
+                field_identity=self.field_identity,
+            ),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -340,3 +409,143 @@ class BundleField(Field):
         if not isinstance(value, Dataset):
             return value
         return [value[label] for label in value.table.index]
+
+
+@dataclass(frozen=True, slots=True)
+class CompositeField(Field):
+    """A schema-level grouping of several columns under one logical field.
+
+    The un-boxed, column-axis sibling of ``BundleField``: where a ``BundleField``
+    bundles *rows* into one column of sub-datasets (cardinality-changing),
+    ``CompositeField`` groups *columns*. It points at an index-less ``sub_schema``
+    whose fields describe N **native** table columns, named
+    ``f"{name}.{sub.name}"`` (a ``location`` field over ``{lat, lon}`` -> columns
+    ``location.lat``, ``location.lon``). Nothing is boxed, so the table stays
+    pandas-native and cardinality is preserved.
+
+    Only the ``CompositeField`` is a top-level schema field; its sub-fields are
+    reached through it (``column_names`` / ``validate_columns``). The sub-schema
+    must be index-less — it groups columns, not a standalone dataset.
+
+    See ``docs/design/composite-field.md``. The index variant (``MultiIndex``
+    levels rather than columns) is future work.
+    """
+
+    logical_type: ClassVar[str] = "composite"
+    _: KW_ONLY
+    sub_schema: "Schema"
+
+    def __post_init__(self) -> None:
+        Field.__post_init__(self)
+        if self.primary:
+            raise ValueError(
+                f"CompositeField {self.name!r} cannot be primary / the index — it "
+                "groups columns. A composite *index* is a separate type "
+                "(CompositeIndexField), so the two register distinct composition "
+                "policies."
+            )
+        if not self.sub_schema.fields:
+            raise ValueError(f"CompositeField {self.name!r}: sub_schema must be non-empty.")
+        for sub in self.sub_schema:
+            if isinstance(sub, IndexField):
+                raise ValueError(
+                    f"CompositeField {self.name!r}: sub_schema must be index-less "
+                    f"(found IndexField {sub.name!r}); it groups columns, not a dataset."
+                )
+
+    def column_names(self) -> tuple[str, ...]:
+        """The native table column names this field spans: ``{name}.{sub}``."""
+
+        return tuple(f"{self.name}.{sub.name}" for sub in self.sub_schema)
+
+    def table_columns(self) -> tuple[str, ...]:
+        return self.column_names()
+
+    def rename_table_columns(self, new_name: str) -> dict[str, str]:
+        return {
+            f"{self.name}.{sub.name}": f"{new_name}.{sub.name}"
+            for sub in self.sub_schema
+        }
+
+    def validate_in_table(self, table: pd.DataFrame) -> None:
+        """Validate each spanned column against its sub-schema field."""
+
+        for sub in self.sub_schema:
+            sub.validate_column(table[f"{self.name}.{sub.name}"])
+
+    def validate_column(self, series: pd.Series) -> None:
+        # A CompositeField spans N columns; single-series validation cannot
+        # apply. Schema.validate_table routes composites to validate_in_table.
+        raise TypeError(
+            f"CompositeField {self.name!r} spans multiple columns "
+            f"({', '.join(self.column_names())}); validate with validate_in_table(table)."
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CompositeIndexField(IndexField):
+    """A composite row identity: an ordered set of pandas ``MultiIndex`` levels.
+
+    The index-axis counterpart of ``CompositeField`` — a **separate type, not a
+    subclass** (they compose differently and register distinct composition
+    policies; the registry resolves by MRO). It subclasses ``IndexField``, so
+    ``isinstance(., IndexField)`` and ``primary_index_field`` still return exactly
+    one index field and the single-index call sites are untouched; the
+    ``MultiIndex`` is encapsulated here. The index-less ``sub_schema`` fields *are*
+    the levels (plain level names = sub-field names). One composite
+    ``IndexIdentity`` for the whole tuple; the row identity is the tuple, unique.
+
+    See ``docs/design/composite-field.md`` §2.
+    """
+
+    _: KW_ONLY
+    sub_schema: "Schema"
+
+    def __post_init__(self) -> None:
+        IndexField.__post_init__(self)  # primary=True, mint field_identity
+        if not self.sub_schema.fields:
+            raise ValueError(f"CompositeIndexField {self.name!r}: sub_schema must be non-empty.")
+        for sub in self.sub_schema:
+            if isinstance(sub, IndexField):
+                raise ValueError(
+                    f"CompositeIndexField {self.name!r}: sub_schema must be index-less "
+                    f"(found IndexField {sub.name!r}); it describes the index levels."
+                )
+
+    def level_names(self) -> tuple[str, ...]:
+        """The ordered ``MultiIndex`` level names (the sub-field names)."""
+
+        return tuple(sub.name for sub in self.sub_schema)
+
+    def table_columns(self) -> tuple[str, ...]:
+        return ()  # the composite is the index, not table columns
+
+    def rename_table_columns(self, new_name: str) -> dict[str, str]:
+        return {}  # a level rename is a sub-structure op (dedicated, future)
+
+    def validate_in_table(self, table: pd.DataFrame) -> None:
+        index = table.index
+        expected = self.level_names()
+        if not isinstance(index, pd.MultiIndex):
+            raise ValueError(
+                f"CompositeIndexField {self.name!r}: the table index must be a "
+                f"MultiIndex with levels {expected}, got a single-level index."
+            )
+        if tuple(index.names) != expected:
+            raise ValueError(
+                f"CompositeIndexField {self.name!r}: index levels "
+                f"{tuple(index.names)} do not match the sub-schema {expected}."
+            )
+        for sub in self.sub_schema:
+            sub.validate_column(index.get_level_values(sub.name).to_series())
+
+    def ensure_index_names(self, table: pd.DataFrame) -> pd.DataFrame:
+        expected = list(self.level_names())
+        if list(table.index.names) != expected:
+            return table.rename_axis(expected)
+        return table
+
+    def to_data_fields(self) -> tuple["Field", ...]:
+        # Decompose to the level fields — a level that was a ForeignIndexField
+        # keeps its reference, so a rollup after reset re-aligns by identity.
+        return tuple(self.sub_schema.fields)

@@ -9,7 +9,7 @@ import pandas as pd
 
 from patchframe.dataset.couplings import CallSpec, MapCoupling, warn_if_unpicklable
 from patchframe.dataset.dataset import Dataset
-from patchframe.dataset.fields import ValueField
+from patchframe.dataset.fields import CompositeField, ValueField
 from patchframe.dataset.schema import Schema
 from patchframe.dataset.state import DatasetState
 from patchframe.ops.base import DatasetOperator
@@ -105,6 +105,11 @@ class map_fields(DatasetOperator):
         for name in names:
             if not state.schema.has(name):
                 raise ValueError(f"map_fields: input field {name!r} not in schema.")
+            if isinstance(state.schema.get(name), CompositeField):
+                raise TypeError(
+                    f"map_fields: {name!r} is a CompositeField (it spans columns) — a "
+                    "composite is opaque to couplings; expand it to its columns first."
+                )
         if state.schema.has(out): #TODO: We should either allow overwriting existing fields, or allow autogenerating a fresh name. Currently user has to choose a fresh name manually, which is error-prone.
             raise ValueError(
                 f"map_fields: output field {out!r} already exists; choose a fresh name."

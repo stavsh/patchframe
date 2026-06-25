@@ -34,6 +34,8 @@ from patchframe.dataset.field_composition import (
 )
 from patchframe.dataset.fields import (
     BundleField,
+    CompositeField,
+    CompositeIndexField,
     DataField,
     DimensionField,
     DimensionedSliceField,
@@ -67,6 +69,8 @@ __all__ = [
     "BundleField",
     "CallSpec",
     "ColumnCollisionStrategy",
+    "CompositeField",
+    "CompositeIndexField",
     "CompositionContext",
     "Coupling",
     "CouplingEngine",

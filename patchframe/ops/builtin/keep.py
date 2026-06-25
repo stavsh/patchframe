@@ -49,6 +49,10 @@ class keep(DatasetOperator):
         return Schema(fields=tuple(f for f in state.schema.fields if f.name in kept_set))
 
     def apply_table(self, state: DatasetState, fields: list[str], **_: Any) -> pd.DataFrame:
-        kept_set = set(fields)
-        keep_cols = [c for c in state.table.columns if c in kept_set]
+        # Atomic: keeping a field keeps all of its table columns (a CompositeField
+        # spans its dotted columns; an index field has none — preserved by pandas).
+        kept_cols: set[str] = set()
+        for name in fields:
+            kept_cols.update(state.schema.get(name).table_columns())
+        keep_cols = [c for c in state.table.columns if c in kept_cols]
         return state.table[keep_cols] if keep_cols else state.table[[]]

@@ -26,7 +26,19 @@ from patchframe.ops.builtin.make_from_dataframe import make_from_dataframe
 from patchframe.ops.builtin.make_plan import make_plan
 from patchframe.ops.builtin.merge import merge
 from patchframe.ops.builtin.partition import partition
+from patchframe.ops.builtin.pipe import pipe, table_transform
+from patchframe.ops.builtin.reduce import (
+    Count,
+    Distinct,
+    Max,
+    Mean,
+    Min,
+    ReducingOperator,
+    Sum,
+    reduce,
+)
 from patchframe.ops.builtin.rename import rename
+from patchframe.ops.builtin.reset_index import reset_index
 from patchframe.ops.builtin.set_index import set_index
 from patchframe.ops.builtin.where import where
 from patchframe.ops.builtin.window_expansion_plan import window_expansion_plan
@@ -57,7 +69,18 @@ __all__ = [
     "match",
     "merge",
     "partition",
+    "pipe",
+    "table_transform",
+    "Count",
+    "Distinct",
+    "Max",
+    "Mean",
+    "Min",
+    "ReducingOperator",
+    "Sum",
+    "reduce",
     "rename",
+    "reset_index",
     "set_index",
     "where",
     "window_expansion_plan",

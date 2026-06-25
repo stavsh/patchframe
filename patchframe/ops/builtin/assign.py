@@ -104,7 +104,14 @@ class assign(DatasetOperator):
         for name, value in columns.items():
             field_def, _ = _normalize_assignment(name, value)
             if schema.has(name):
-                _validate_existing_field(schema.get(name), field_def, name=name)
+                existing = schema.get(name)
+                if len(existing.table_columns()) > 1:
+                    raise ValueError(
+                        f"assign: {name!r} spans multiple table columns (a "
+                        "CompositeField is atomic) — cannot assign a single value "
+                        "column to it; use a dedicated composite operator."
+                    )
+                _validate_existing_field(existing, field_def, name=name)
                 continue
             schema = schema.add(
                 compose_column(

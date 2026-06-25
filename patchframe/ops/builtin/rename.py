@@ -48,8 +48,9 @@ class rename(DatasetOperator):
         return state.schema.rename(mapping)
 
     def apply_table(self, state: DatasetState, mapping: dict[str, str], **_) -> pd.DataFrame:
-        col_mapping = {k: v for k, v in mapping.items() if k in state.table.columns}
-        df = state.table.rename(columns=col_mapping)
+        # Column renames are delegated to the schema/fields: a CompositeField
+        # re-prefixes its dotted columns; an index field contributes none.
+        df = state.table.rename(columns=state.schema.table_column_renames(mapping))
         # The primary index is the DataFrame index, not a column; rename its axis
         # so the index name stays consistent with the renamed IndexField.
         if df.index.name in mapping:

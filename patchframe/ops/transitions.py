@@ -32,6 +32,7 @@ class Cardinality(Enum):
     PRESERVE = "preserve"   # one output row per input row
     FILTER = "filter"       # output rows are a subset of input rows
     EXPAND = "expand"       # one input row may yield several output rows
+    REDUCE = "reduce"       # many input rows collapse to one aggregate row
     UNKNOWN = "unknown"     # no local cardinality guarantee
 
 

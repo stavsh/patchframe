@@ -29,6 +29,20 @@ class Schema:
         if len(names) != len(set(names)):
             raise ValueError(f"Schema contains duplicate field names: {names}")
 
+        # No two fields may claim the same table column. With 1:1 fields this is
+        # implied by unique names, but a CompositeField spans dotted columns
+        # (location.lat), so a stray field named "location.lat" — or two
+        # composites — could collide. Fields own their columns; overlap is a bug.
+        claimed = [col for f in self.fields for col in f.table_columns()]
+        if len(claimed) != len(set(claimed)):
+            seen: set[str] = set()
+            dupes: set[str] = set()
+            for col in claimed:
+                (dupes if col in seen else seen).add(col)
+            raise ValueError(
+                f"Schema fields claim overlapping table columns: {sorted(dupes)}"
+            )
+
         primary_counts: dict[type, int] = defaultdict(int)
         for f in self.fields:
             if f.primary:
@@ -74,6 +88,18 @@ class Schema:
             for f in self.fields
         ))
 
+    def table_column_renames(self, mapping: dict[str, str]) -> dict[str, str]:
+        """Map old table-column names to new for a field-rename ``mapping``.
+
+        Delegates to each renamed field: a normal field renames its one column, a
+        ``CompositeField`` re-prefixes its dotted columns, an index field
+        contributes none (its axis renames separately).
+        """
+        renames: dict[str, str] = {}
+        for old, new in mapping.items():
+            renames.update(self.get(old).rename_table_columns(new))
+        return renames
+
     def retype(self, name: str, replacement: Field) -> "Schema":
         """Return a new schema with one field replaced."""
         replaced = []
@@ -89,19 +115,21 @@ class Schema:
         return Schema(fields=tuple(replaced))
 
     def validate_table(self, table: pd.DataFrame) -> None:
-        """Validate that all schema fields are present in the table with compatible dtypes."""
-        missing = [
-            f.name for f in self.fields
-            if f.logical_type != "index" and f.name not in table.columns
-        ]
+        """Validate that all schema fields are present in the table with compatible dtypes.
+
+        A ``CompositeField`` occupies its N dotted columns (``{name}.{sub}``)
+        rather than one column named after it, so it is checked against those.
+        """
+        missing: list[str] = []
+        for f in self.fields:
+            for col in f.table_columns():  # () for the index; dotted for a composite
+                if col not in table.columns:
+                    missing.append(col)
         if missing:
             raise ValueError(f"Table is missing schema fields: {missing}")
 
         for f in self.fields:
-            if f.logical_type == "index":
-                f.validate_column(table.index.to_series())
-            else:
-                f.validate_column(table[f.name])
+            f.validate_in_table(table)
 
     @classmethod
     def from_fields(cls, fields: Iterable[Field]) -> "Schema":

@@ -6,7 +6,8 @@ from typing import Any
 
 import pandas as pd
 
-from patchframe.dataset.fields import IndexColumnField, IndexField
+from patchframe.dataset.fields import IndexField
+from patchframe.dataset.identity import maybe_primary_index_field
 from patchframe.dataset.schema import Schema
 from patchframe.dataset.state import DatasetState
 from patchframe.ops.base import DatasetOperator
@@ -50,6 +51,17 @@ class set_index(DatasetOperator):
     ) -> Schema:
         if not state.schema.has(field):
             raise ValueError(f"{self.name}: field {field!r} is not present in the schema.")
+        if len(state.schema.get(field).table_columns()) > 1:
+            raise TypeError(
+                f"{self.name}: {field!r} spans multiple table columns (a CompositeField "
+                "is atomic); a composite index is CompositeIndexField, not set_index."
+            )
+        old_index = maybe_primary_index_field(state.schema)
+        if old_index is not None and len(old_index.level_names()) > 1:
+            raise TypeError(
+                f"{self.name}: the current index is composite ({old_index.level_names()}); "
+                "decompose it with reset_index before set_index."
+            )
         if not drop:
             raise NotImplementedError("set_index(drop=False) is not implemented yet.")
 
@@ -65,22 +77,11 @@ class set_index(DatasetOperator):
                         field_identity=field_def.field_identity,
                     )
                 )
-            elif field_def.primary and field_def.name != target_name:
-                index_identity = (
-                    field_def.identity
-                    if isinstance(field_def, IndexField)
-                    else None
-                )
-                output_fields.append(
-                    IndexColumnField(
-                        name=field_def.name,
-                        dtype=field_def.dtype,
-                        nullable=True,
-                        metadata=field_def.metadata,
-                        index_identity=index_identity,
-                        field_identity=field_def.field_identity,
-                    )
-                )
+            elif field_def is old_index and field_def.name != target_name:
+                # The index demotes to its data column(s) — the field's own
+                # knowledge (single -> one IndexColumnField; composite -> levels),
+                # not an isinstance branch here.
+                output_fields.extend(field_def.to_data_fields())
             else:
                 output_fields.append(field_def)
         return Schema(fields=tuple(output_fields))

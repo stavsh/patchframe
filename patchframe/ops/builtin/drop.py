@@ -48,7 +48,13 @@ class drop(DatasetOperator):
         return state.schema.drop(*fields)
 
     def apply_table(self, state: DatasetState, fields: list[str], **_: Any) -> pd.DataFrame:
-        col_drops = [f for f in fields if f in state.table.columns]
+        # Atomic: dropping a field drops all of its table columns (a CompositeField
+        # spans its dotted columns).
+        col_drops: list[str] = []
+        for name in fields:
+            col_drops.extend(
+                c for c in state.schema.get(name).table_columns() if c in state.table.columns
+            )
         if not col_drops:
             return state.table
         return state.table.drop(columns=col_drops)
