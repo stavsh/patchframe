@@ -71,6 +71,16 @@ class DataSource:
         """
         return None
 
+    def shape(self, accessor: DataAccessor) -> tuple[int, ...]:
+        """Return the shape of what ``accessor`` would materialize, without reading it.
+
+        The "extent without materialize" primitive (docs/design/dataset-accessor.md
+        §8/§9) that drives chunk planning and the size estimator — computed from
+        metadata/extents, never by materializing. ``ArrayDataSource`` provides a
+        default from ``extent_for``; ``DatasetSource`` from its row count.
+        """
+        raise NotImplementedError
+
     def close(self) -> None:
         """Close any live resources associated with this source."""
         return None

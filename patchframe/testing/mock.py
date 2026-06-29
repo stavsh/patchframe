@@ -135,6 +135,9 @@ class MockDataSource(DataSource):
         resolved = self.dimensions.resolve(self._effective_slice(accessor))
         return tuple(_axis_size(di) for di in resolved)
 
+    def shape(self, accessor: DataAccessor) -> tuple[int, ...]:
+        return self._shape_for(accessor)
+
     def _rng(self, item_id: Any) -> np.random.Generator:
         if self.seed is None:
             return np.random.default_rng()

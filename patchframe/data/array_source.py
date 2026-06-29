@@ -6,6 +6,8 @@ import hashlib
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
+import numpy as np
+
 from patchframe.data.accessor import DataAccessor
 from patchframe.data.descriptor import SourceDescriptor
 from patchframe.data.dimensioned_slice import DimensionedSlice
@@ -158,6 +160,22 @@ class ArrayDataSource(DataSource):
             "dimensioned_slice": accessor.dimensioned_slice,
         }
 
+    def shape(self, accessor: DataAccessor) -> tuple[int, ...]:
+        """Array shape from the item extent merged with the accessor slice, no read."""
+        extent = self.extent_for(accessor.item_id)
+        if extent is None:
+            raise NotImplementedError(
+                f"{type(self).__name__}.shape requires extent_for("
+                f"{accessor.item_id!r}) or an explicit shape() override."
+            )
+        merged = (
+            dict(extent.dims)
+            if accessor.dimensioned_slice is None
+            else {**extent.dims, **accessor.dimensioned_slice.dims}
+        )
+        resolved = self.dimensions.resolve(DimensionedSlice(dims=merged))
+        return tuple(_axis_size(di) for di in resolved)
+
     def slice_accessor(self, accessor: DataAccessor, dim_slice: DimensionedSlice) -> DataAccessor:
         """Validate a slice against source dimensions and attach it lazily."""
         self.resolve_slice(dim_slice)
@@ -182,3 +200,19 @@ class ArrayDataSource(DataSource):
 def _stable_token(value: Any) -> str:
     data = repr(value).encode("utf-8")
     return hashlib.sha256(data).hexdigest()[:16]
+
+
+def _axis_size(di: DimensionIndex) -> int:
+    """Number of elements along one resolved axis (the extent must bound every axis)."""
+    v = di.value
+    if isinstance(v, slice):
+        start = v.start if v.start is not None else 0
+        if v.stop is None:
+            raise ValueError(
+                f"Dimension {di.name!r} has an unbounded stop; the item extent must "
+                "bound every axis for shape()."
+            )
+        return v.stop - start
+    if isinstance(v, (int, np.integer)):
+        return 1
+    return len(v)

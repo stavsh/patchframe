@@ -47,17 +47,23 @@ Cross-references:
 
 ## v1→v2 boundary — lazy Dataset access (the `BundleField` cell)
 
-- **`DatasetAccessor` + `DatasetSource`.** The `BundleField` equivalent of
-  `DataAccessor`/`DataSource`: a lazy dataset-valued cell that materializes a
-  sub-`Dataset` on access, exactly mirroring how a `DataField` cell is
-  array-or-`DataAccessor` (`lazy-and-bundle.md` §3). `fields.py`'s `BundleField`
-  marks the eager-only state as future work; the genericity constraints are
-  already pinned (`design-constraints.md` §5, `lazy-and-bundle.md` §8: the
-  `DataSource` contract stays output-type-generic, `SourceDescriptor`/
-  `assert_source_contract` extend without a refactor). The *primitive* is v1-able
-  scaffolding; the *streaming executor* that exploits it (out-of-core fiber
-  streaming — the adtech journeys example is its gating workload, `adtech-findings.md`
-  §3.6) is v2. Scaffold the cell now; build the executor at the workload.
+- **`DatasetAccessor` / `DatasetSource` — designed: `dataset-accessor.md`.** The
+  lazy dataset-valued `BundleField` cell (the `DataAccessor`/`DataSource` sibling,
+  one level up). The note settles: the cell-union (no separate lazy field type),
+  the passive-pointer create→slice→materialize accessor (operators still
+  transform the bundle lazily, materialize-before-call), the cardinality law
+  (laziness is inherited or expansion-forced, never introduced by a
+  row-preserving reshape),
+  `offload = save(store=…)` as the realize primitive, the `IndexDimension`-only v1
+  cut, the mandatory `read_partial(index)` reader contract, and the cardinality
+  length-map / estimator deciding pad-vs-rechunk-vs-fusion. **v1** = the cell
+  primitive + the §10 closed-form streaming pattern (lazy `window_expansion_plan`
+  → eager index-chunk → lazy per-chunk), which streams out-of-core window
+  expansion **without** a fusing executor; the executor (computed-recipe source,
+  rechunk buffer, fusion) is **v2**. Gating workload reframed from the journeys
+  grouping (regime-1) to out-of-core window expansion of large patches
+  (`lazy-and-bundle.md` §2). `fields.py`'s `BundleField` still marks the eager-only
+  state as future work.
 
 ## v1 — Extension surfaces (consolidation)
 

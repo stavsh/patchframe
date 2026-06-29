@@ -2,6 +2,8 @@
 
 from patchframe.data.accessor import DataAccessor
 from patchframe.data.array_source import ArrayDataSource, ResolvedSlice
+from patchframe.data.dataset_accessor import DatasetAccessor
+from patchframe.data.dataset_source import DatasetSource
 from patchframe.data.descriptor import SourceDescriptor
 from patchframe.data.dimensioned_slice import DimensionedSlice
 from patchframe.data.dimensioned_slice_array import DimensionedSliceArray
@@ -40,6 +42,8 @@ __all__ = [
     "overlap",
     "DataAccessor",
     "DataSource",
+    "DatasetAccessor",
+    "DatasetSource",
     "Dimension",
     "DimensionIndex",
     "DimensionedSlice",
