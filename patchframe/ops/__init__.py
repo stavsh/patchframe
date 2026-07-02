@@ -37,6 +37,7 @@ from patchframe.ops.builtin.match import match
 from patchframe.ops.builtin.make_from_dataframe import make_from_dataframe
 from patchframe.ops.builtin.make_plan import make_plan
 from patchframe.ops.builtin.merge import merge
+from patchframe.ops.builtin.offload import offload
 from patchframe.ops.builtin.partition import partition
 from patchframe.ops.builtin.pipe import pipe, table_transform
 from patchframe.ops.builtin.reduce import (
@@ -135,6 +136,7 @@ __all__ = [
     "make_from_dataframe",
     "make_plan",
     "merge",
+    "offload",
     "partition",
     "pipe",
     "table_transform",

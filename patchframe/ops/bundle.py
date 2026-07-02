@@ -37,7 +37,7 @@ from patchframe.dataset.couplings import (
     warn_if_unpicklable,
 )
 from patchframe.dataset.dataset import Dataset
-from patchframe.dataset.fields import BundleField, IndexField
+from patchframe.dataset.fields import BundleField, IndexField, resolve_fiber_cell
 from patchframe.dataset.schema import Schema
 from patchframe.dataset.state import DatasetState
 from patchframe.ops.base import CompositionOperator, DatasetOperator, OperatorCall
@@ -328,7 +328,7 @@ def _extract_cell(bundle_ds: Dataset, name: str | None) -> Dataset:
     field = bundle_ds.schema.get(name)
     if not isinstance(field, BundleField):
         raise TypeError(f"extract: {name!r} is not a BundleField column.")
-    cell = bundle_ds.table[name].iloc[0]
+    cell = resolve_fiber_cell(bundle_ds.table[name].iloc[0])
     if not isinstance(cell, Dataset):
         raise TypeError(
             f"extract: cell {name!r} is not materialized to a Dataset "
@@ -343,6 +343,7 @@ def _flatten_cells(bundle_ds: Dataset) -> Dataset:
         if not isinstance(field, BundleField):
             continue
         for value in bundle_ds.table[field.name]:
+            value = resolve_fiber_cell(value)
             if isinstance(value, Dataset):
                 cells.append(value)
             elif not pd.isna(value):

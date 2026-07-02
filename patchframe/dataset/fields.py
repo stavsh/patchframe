@@ -133,6 +133,23 @@ def exit_value(field_def: "Field", value: Any) -> Any:
     return field_def.exit_value(value)
 
 
+def resolve_fiber_cell(value: Any) -> Any:
+    """Resolve a lazy ``BundleField`` cell (a ``DatasetAccessor``) to its ``Dataset``.
+
+    The shared resolver (docs/design/dataset-accessor.md §11) called at every
+    bundle cell-read boundary: a ``DatasetAccessor`` cell materializes to a
+    ``Dataset`` (no-arg, via its ``manager_hint`` — like ``Materialize.compute``);
+    a ``Dataset`` or null cell passes through. Centralizing it keeps the cell-union
+    (eager ``Dataset`` / lazy ``DatasetAccessor``) invisible to consumers.
+    """
+
+    from patchframe.data.dataset_accessor import DatasetAccessor
+
+    if isinstance(value, DatasetAccessor):
+        return value.materialize()
+    return value
+
+
 # ---------------------------------------------------------------------------
 # Field hierarchy
 # ---------------------------------------------------------------------------
@@ -398,14 +415,16 @@ class BundleField(Field):
 
         Row access is the exit point, so a cell-resident sub-dataset leaves as
         plain Python: one dict per fiber row, each produced by the fiber's own
-        row access — evaluation and exit compose recursively. A pending (null)
-        cell exits as-is. When lazy fiber navigation is wanted, hold the fiber
-        as a ``Dataset`` via the storage surface (``ds.table`` / ``ds["col"]``)
-        instead.
+        row access — evaluation and exit compose recursively. A lazy cell (a
+        ``DatasetAccessor``) is materialized first via ``resolve_fiber_cell``; a
+        pending (null) cell exits as-is. When lazy fiber navigation is wanted,
+        hold the fiber as a ``Dataset`` via the storage surface (``ds.table`` /
+        ``ds["col"]``) instead.
         """
 
         from patchframe.dataset.dataset import Dataset
 
+        value = resolve_fiber_cell(value)
         if not isinstance(value, Dataset):
             return value
         return [value[label] for label in value.table.index]

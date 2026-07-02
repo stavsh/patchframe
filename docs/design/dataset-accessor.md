@@ -1,6 +1,17 @@
 # Lazy Dataset Access — `DatasetAccessor` / `DatasetSource`
 
-Status: design direction agreed 2026-06-29 (discussion-only; nothing built yet).
+Status: design agreed 2026-06-29; **Phase 1 + `offload` BUILT 2026-06-30** (665
+passed). Built: the cell primitive (`DatasetAccessor`/`DatasetSource`, the
+no-materialize `length`/`shape` primitives, `MemoryDatasetSource`,
+`assert_dataset_source_contract`, the base `DataSource.shape` + `ArrayDataSource`
+default; the `SourceManager` genericity audit verified — zero refactor) and the
+`offload` producer (`offload(ds, store=, chunk_size=)` → a chunk bundle of
+`DatasetAccessor`s, the `DatasetStore` protocol [PROVISIONAL] + `MemoryDatasetStore`,
+the `resolve_fiber_cell` resolver at 3/5 bundle-read sites). **Unbuilt:** the disk
+`MetadataStore` backend (the storage machinery, §5 — now under discussion), the 2
+remaining resolver sites (`ApplyOperator`/`MapCoupling`), the cardinality length-map
+/ estimator (§9), the §10 window-expansion streaming pattern, the multi-axis
+(patch-dim) accessor slice (§6).
 Grows the roadmap entry "lazy Dataset access (the `BundleField` cell)" into its
 own note (`roadmap.md` → shrink that entry to a pointer). Records the converged
 model and the corrections made along the way, so the choices are not

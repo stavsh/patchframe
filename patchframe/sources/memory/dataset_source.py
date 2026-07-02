@@ -18,15 +18,15 @@ from __future__ import annotations
 
 import uuid
 
-from patchframe.data.dataset_source import DatasetSource
+from patchframe.data.dataset_source import ROW_DIMENSION, DatasetSource
 from patchframe.data.descriptor import SourceDescriptor
 from patchframe.data.dimensioned_slice import DimensionedSlice
 from patchframe.data.dimensions import Dimensions, IndexDimension
+from patchframe.data.manager import SourceManager, get_default_manager
 from patchframe.dataset.dataset import Dataset
 from patchframe.dataset.state import DatasetState
 
-#: Conventional name of the row axis (axis 0) of a dataset source (§6).
-ROW_DIMENSION = "row"
+# ROW_DIMENSION is re-exported from data.dataset_source (the canonical row-axis name).
 
 
 class MemoryDatasetSource(DatasetSource):
@@ -68,3 +68,19 @@ class MemoryDatasetSource(DatasetSource):
         return Dataset(state=self._state).replace_state(
             table=self._state.table.iloc[row_value]
         )
+
+
+class MemoryDatasetStore:
+    """In-memory ``DatasetStore`` — PROVISIONAL (the interface is subject to change).
+
+    Each ``put`` registers a ``MemoryDatasetSource`` holding the dataset's state
+    into ``manager`` and returns its ``source_desc_id``. The pandas-memory backend
+    of docs/design/dataset-accessor.md §5: no serialization, in-process; a disk /
+    ``MetadataStore`` backend slots in behind the same ``put`` (the IO design note).
+    """
+
+    def __init__(self, manager: SourceManager | None = None) -> None:
+        self.manager = manager or get_default_manager()
+
+    def put(self, ds: Dataset) -> int:
+        return self.manager.register_source(MemoryDatasetSource(ds.state))

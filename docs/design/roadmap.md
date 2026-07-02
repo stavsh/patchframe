@@ -18,36 +18,41 @@ Cross-references:
 - `operator-authoring.md`, CLAUDE.md "Source Authoring" — the *built* authoring
   surfaces these extend.
 
-## v1 — IO and storage
+## v1 — IO and storage — designed: `storage-machinery.md`
 
 `patchframe/io/` is empty; `patchframe/storage/` has `array_store.py` only
-(`storage/__init__.py` exports nothing yet).
+(`storage/__init__.py` exports nothing yet). The **design note is
+`storage-machinery.md`** (the note the `SourceIOAdapter` gate required); it settles
+the whole family and, deliberately, the honest capability spectrum. In brief:
 
-- **IO operators: `load` / `save` / `append`.** The dataset-level IO operator
-  family — persist a `Dataset` (schema + table + couplings + provenance) and read
-  it back, with `append` for accumulating stores. Must respect: pickle-friendly
-  serialized state with no live runtime leak (`design-constraints.md` §7), and the
-  source-vs-storage split below. `DataField` columns persist as accessors that
-  reopen from descriptors alone (`SourceManager` is not part of portable state).
-- **`ArrayStore` (exists) + `MetadataStore` (new).** Two persistence backends with
-  different shapes: `ArrayStore` holds the array payloads (the `DataField`
-  materializations); `MetadataStore` holds the table/schema/couplings/provenance
-  (the dataset's structural state). `ArrayStore` needs completion + export from
-  `storage/__init__.py`; `MetadataStore` is unbuilt. Keep the table backend
-  swappable (`design-constraints.md` §8) — the metadata store is not pandas-only.
-- **`SourceIOAdapter` (design lost — recaptured here).** The seam for
-  **source-specific IO optimization**, and the place the **"source we read from"
-  vs "storage we own"** split lives (`design-constraints.md` §5): a raster on a
-  remote bucket and a Zarr store we wrote outputs to are different categories;
-  conflating them forces every adapter to handle every case. An adapter handles
-  one source/storage kind's efficient load/save/append/partial-read/sync. **Needs
-  a design note before building** — specifically the source-vs-storage taxonomy
-  and the adapter protocol — because v1 IO above should not harden the wrong
-  shape. This entry is the reference that was missing.
+- **`save` / `load` / `append`** — one user-facing operator each over a container of
+  three field-routed sections (MetadataStore spine / ArrayStore / DatasetStore) plus
+  a **manifest** (the transfer plan + status/error, write-ahead).
+- **Storage is field-owned** — `to_storage`/`from_storage` (the 4th field capability
+  after the column trio / row-exit / composition), encoding to a closed storable
+  vocabulary (native + bytes + reference-struct) that makes parquet viable for every
+  field and keeps extensions (geometry→WKB) out of core. The metadata/array/dataset
+  split is the *outcome* of a field's encode, not an `isinstance`.
+- **A transfer is a plan `Dataset`**; the `WriteCoupling` is the dual of `Materialize`
+  (`DataAccessor.write`/`DatasetAccessor.write`, the latter a recursive `save` →
+  `BundleField`'s plan is a tree). Store owns the block grid (`blocks()`), source
+  keeps its existing read contract — **no `AxisWindow`, no upward `ops` dependency**;
+  `SourceIOAdapter` is reserved for special cases (sparse/opaque/native-chunk, and
+  mode mechanics like LMDB resize).
+- **Execution** is an executor/`execution_context` over independent units (sequential
+  default; parallel/async/Dask later), gated by `thread_safe`/`fork_safe` + store
+  ordering. **Robustness** rides the manifest (isolation = per-row try/except; retry
+  = idempotent re-run; resume = filter-not-done; errors = queryable columns).
+- **`portable` is the reference-vs-own gate**; **`open(mode)`** (create/read/update/
+  append) is a declared capability. **Stated limits (§11):** mid-array resume only
+  on chunk-native stores; resume/append only on ≥`update`/`append` stores; append-only
+  stores aren't idempotent; non-portable payloads must be owned. Not universal —
+  documented. Must still respect pickle-friendliness (`design-constraints.md` §7) and
+  the swappable table backend (§8).
 
 ## v1→v2 boundary — lazy Dataset access (the `BundleField` cell)
 
-- **`DatasetAccessor` / `DatasetSource` — designed: `dataset-accessor.md`.** The
+- **`DatasetAccessor` / `DatasetSource` — `dataset-accessor.md`; Phase 1 + `offload` BUILT 2026-06-30.** The
   lazy dataset-valued `BundleField` cell (the `DataAccessor`/`DataSource` sibling,
   one level up). The note settles: the cell-union (no separate lazy field type),
   the passive-pointer create→slice→materialize accessor (operators still
